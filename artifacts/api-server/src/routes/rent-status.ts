@@ -19,7 +19,7 @@ import {
   type RentStatus,
 } from "@workspace/db";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth";
-import { getRentStatus as fetchDoorLoopRentStatus, type DLRentRow } from "../services/doorloop";
+import { getRentStatus as fetchRentecRentStatus, type DLRentRow } from "../services/rentec";
 
 const router: IRouter = Router();
 
@@ -42,7 +42,7 @@ async function fetchFromDoorLoop(
   month: number,
   year: number,
 ): Promise<{ summary: ReturnType<typeof buildSummaryFromDoorLoopRows>; rows: ReturnType<typeof mapDoorLoopRow>[] } | null> {
-  const snap = await fetchDoorLoopRentStatus(month, year);
+  const snap = await fetchRentecRentStatus(month, year);
   if (!snap) return null;
   const localProps = await db.select().from(propertiesTable);
   const idx = buildPropIndex(localProps);

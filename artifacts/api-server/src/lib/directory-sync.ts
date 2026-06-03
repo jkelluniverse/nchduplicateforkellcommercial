@@ -11,7 +11,7 @@ import {
   buildLeaseTenantLookup,
   selectCurrentLeaseTenants,
   type DLTenant,
-} from "../services/doorloop";
+} from "../services/rentec";
 
 interface SyncStatus {
   lastSyncAt: string | null;
@@ -49,7 +49,7 @@ interface SyncResult {
 // ─────────────────────────────────────────────────────────────────────────────
 export async function syncDirectory(): Promise<SyncResult> {
   if (!hasToken()) {
-    const err = "DOORLOOP_API_TOKEN not configured";
+    const err = "RENTEC_API_KEY not configured";
     lastSyncStatus = { lastSyncAt: null, lastSyncOk: false, propertyCount: 0, error: err };
     return { ok: false, inserted: 0, updated: 0, removed: 0, total: 0, error: err };
   }
@@ -64,7 +64,7 @@ export async function syncDirectory(): Promise<SyncResult> {
     ]);
 
     if (dlProperties.length === 0 && dlLeases.length === 0) {
-      const err = "DoorLoop returned no data — may be unreachable";
+      const err = "Rentec returned no data — may be unreachable";
       lastSyncStatus = { ...lastSyncStatus, lastSyncOk: false, error: err };
       return { ok: false, inserted: 0, updated: 0, removed: 0, total: 0, error: err };
     }

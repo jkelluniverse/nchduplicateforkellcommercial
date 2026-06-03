@@ -4,7 +4,7 @@ import type { User, LoginBody } from "@workspace/api-client-react";
 import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { clearPreviewCache } from "./preview-cache";
-import { subscribeIfGranted } from "@/features/chat/push";
+import { subscribeIfGranted } from "@/lib/push";
 
 interface AuthContextType {
   user: User | null;

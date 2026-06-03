@@ -1,7 +1,6 @@
 import { pgTable, text, serial, timestamp, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
-import { jobsTable } from "./jobs";
 
 export const tasksTable = pgTable("tasks", {
   id: serial("id").primaryKey(),
@@ -17,7 +16,6 @@ export const tasksTable = pgTable("tasks", {
   // Expanded enum: pending/in_progress/done are the new canonical values; open
   // is kept for backward-compat with existing rows (treated as "pending").
   status: text("status", { enum: ["pending", "open", "in_progress", "done"] }).notNull().default("pending"),
-  linkedJobId: integer("linked_job_id").references(() => jobsTable.id),
   createdBy: text("created_by").notNull(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

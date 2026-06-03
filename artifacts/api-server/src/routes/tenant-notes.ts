@@ -10,7 +10,7 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 
 function useDoorLoop(): boolean {
-  return process.env.USE_DOORLOOP === "true";
+  return Boolean(process.env.RENTEC_API_KEY);
 }
 
 function formatDateStr(iso: string | null | undefined): string {
@@ -116,7 +116,7 @@ async function autoUpdateStatuses(): Promise<void> {
 
     if (useDoorLoop() && note.doorloopLeaseId && note.expectedPaymentDate) {
       try {
-        const { getPaymentsForLease } = await import("../services/doorloop");
+        const { getPaymentsForLease } = await import("../services/rentec");
         const payments = await getPaymentsForLease(note.doorloopLeaseId);
         const hasPaid = payments.some((p) => p.date >= note.expectedPaymentDate!);
         newStatus = hasPaid ? "resolved" : "missed_promise";

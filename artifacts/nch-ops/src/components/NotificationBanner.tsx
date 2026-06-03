@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Bell, X } from "lucide-react";
-import { setupPushNotifications, pushSupported } from "@/features/chat/push";
+import { setupPushNotifications, pushSupported } from "@/lib/push";
 
 const DISMISSED_KEY = "nch_notif_banner_dismissed";
 

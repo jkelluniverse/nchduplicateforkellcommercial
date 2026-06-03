@@ -4,7 +4,6 @@ import {
   db,
   tasksTable,
   taskCommentsTable,
-  jobsTable,
   usersTable,
   activityTable,
 } from "@workspace/db";
@@ -93,7 +92,7 @@ function serializeTask(
     dueDate: t.dueDate,
     priority: normalizePriority(t.priority),
     status,
-    linkedJobId: t.linkedJobId,
+    linkedJobId: null,
     linkedJobNumber: jobNumber,
     createdBy: t.createdBy,
     completedAt: t.completedAt ? t.completedAt.toISOString() : null,
@@ -124,32 +123,7 @@ router.get("/tasks", requireAuth, async (req, res): Promise<void> => {
     throw err;
   }
 
-  // Enrichment 1: linked job numbers (best-effort)
-  const linkedJobIds = Array.from(
-    new Set(tasks.map((t) => t.linkedJobId).filter((id): id is number => id != null)),
-  );
-  const jobNumberById = new Map<number, string>();
-  if (linkedJobIds.length > 0) {
-    try {
-      const jobRows = await db
-        .select({ id: jobsTable.id, jobNumber: jobsTable.jobNumber })
-        .from(jobsTable)
-        .where(sql`${jobsTable.id} = ANY(${linkedJobIds})`);
-      for (const j of jobRows) {
-        if (j.jobNumber) jobNumberById.set(j.id, j.jobNumber);
-      }
-    } catch (err) {
-      req.log.error(
-        {
-          err: err instanceof Error ? { message: err.message, stack: err.stack } : err,
-          cause: err instanceof Error && "cause" in err ? err.cause : undefined,
-        },
-        "GET /api/tasks job-number enrichment failed (degrading to null)",
-      );
-    }
-  }
-
-  // Enrichment 2: comment counts (best-effort)
+  // Enrichment: comment counts (best-effort)
   const commentCountByTask = new Map<number, number>();
   try {
     const counts = await db
@@ -173,11 +147,7 @@ router.get("/tasks", requireAuth, async (req, res): Promise<void> => {
   }
 
   let result = tasks.map((t) =>
-    serializeTask(
-      t,
-      t.linkedJobId != null ? (jobNumberById.get(t.linkedJobId) ?? null) : null,
-      commentCountByTask.get(t.id) ?? 0,
-    ),
+    serializeTask(t, null, commentCountByTask.get(t.id) ?? 0),
   );
 
   if (req.query.assignedTo) {
@@ -224,7 +194,6 @@ router.post("/tasks", requireAuth, async (req: AuthRequest, res): Promise<void> 
         dueDate: dueDateStr,
         priority: dbPriority(parsed.data.priority),
         status: "pending",
-        linkedJobId: parsed.data.linkedJobId || null,
         createdBy: req.user!.username,
       })
       .returning();
@@ -294,7 +263,6 @@ async function updateTaskHandler(req: AuthRequest, res: Parameters<Parameters<ty
   if (parsed.data.description !== undefined) update.description = parsed.data.description;
   if (parsed.data.assignedTo !== undefined) update.assignedTo = parsed.data.assignedTo;
   if (parsed.data.propertyAddress !== undefined) update.propertyAddress = parsed.data.propertyAddress;
-  if (parsed.data.linkedJobId !== undefined) update.linkedJobId = parsed.data.linkedJobId;
   if (parsed.data.priority !== undefined) update.priority = dbPriority(parsed.data.priority);
   if (parsed.data.dueDate !== undefined) {
     update.dueDate = parsed.data.dueDate
@@ -316,15 +284,6 @@ async function updateTaskHandler(req: AuthRequest, res: Parameters<Parameters<ty
     return;
   }
 
-  let linkedJobNumber: string | null = null;
-  if (task.linkedJobId) {
-    try {
-      const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, task.linkedJobId));
-      linkedJobNumber = job?.jobNumber ?? null;
-    } catch (err) {
-      req.log.error({ err, taskId }, "updateTaskHandler: jobs lookup failed (degrading to null)");
-    }
-  }
   let commentCount = 0;
   try {
     const [{ count }] = await db
@@ -337,7 +296,7 @@ async function updateTaskHandler(req: AuthRequest, res: Parameters<Parameters<ty
   }
 
   emit("task_updated", { taskId: task.id, assignedTo: task.assignedTo });
-  res.json(serializeTask(task, linkedJobNumber, commentCount));
+  res.json(serializeTask(task, null, commentCount));
 }
 
 router.put("/tasks/:taskId/complete", requireAuth, async (req: AuthRequest, res): Promise<void> => {
@@ -354,15 +313,6 @@ router.put("/tasks/:taskId/complete", requireAuth, async (req: AuthRequest, res)
   if (!task) {
     res.status(404).json({ error: "Task not found" });
     return;
-  }
-  let linkedJobNumber: string | null = null;
-  if (task.linkedJobId) {
-    try {
-      const [job] = await db.select().from(jobsTable).where(eq(jobsTable.id, task.linkedJobId));
-      linkedJobNumber = job?.jobNumber ?? null;
-    } catch (err) {
-      req.log.error({ err, taskId }, "completeTask: jobs lookup failed (degrading to null)");
-    }
   }
   let commentCount = 0;
   try {
@@ -388,7 +338,7 @@ router.put("/tasks/:taskId/complete", requireAuth, async (req: AuthRequest, res)
   }
 
   emit("task_updated", { taskId: task.id, assignedTo: task.assignedTo });
-  res.json(serializeTask(task, linkedJobNumber, commentCount));
+  res.json(serializeTask(task, null, commentCount));
 });
 
 router.delete("/tasks/:taskId", requireAuth, async (req: AuthRequest, res): Promise<void> => {

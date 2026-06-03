@@ -5,8 +5,6 @@ import path from "node:path";
 import fs from "node:fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { CHAT_UPLOAD_DIR } from "./lib/chat-upload";
-import { requireAuth } from "./middlewares/auth";
 
 const app: Express = express();
 
@@ -32,43 +30,6 @@ app.use(
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
-
-// Chat attachment files — auth required (Bearer header or ?token= query param).
-// Non-inline-renderable types are forced to download to mitigate stored-XSS.
-const INLINE_EXTENSIONS = new Set([
-  ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic",
-  ".mp3", ".m4a", ".webm", ".ogg", ".wav",
-  ".mp4", ".mov",
-  ".pdf",
-]);
-app.get("/api/chat-files/:filename", requireAuth, (req, res) => {
-  const raw = String(req.params.filename ?? "");
-  const basename = path.basename(raw);
-  if (basename !== raw || basename.includes("/") || basename.includes("..")) {
-    res.status(400).json({ error: "Invalid filename" });
-    return;
-  }
-  const fullPath = path.join(CHAT_UPLOAD_DIR, basename);
-  if (!fullPath.startsWith(CHAT_UPLOAD_DIR + path.sep) && fullPath !== CHAT_UPLOAD_DIR) {
-    res.status(400).json({ error: "Invalid path" });
-    return;
-  }
-  if (!fs.existsSync(fullPath)) {
-    res.status(404).json({ error: "Not found" });
-    return;
-  }
-  const ext = path.extname(basename).toLowerCase();
-  res.setHeader("Cache-Control", "private, max-age=604800");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  if (!INLINE_EXTENSIONS.has(ext)) {
-    res.setHeader("Content-Disposition", `attachment; filename="${basename}"`);
-  }
-  res.sendFile(fullPath, (err) => {
-    if (err && !res.headersSent) {
-      res.status(500).end();
-    }
-  });
-});
 
 app.use("/api", router);
 
