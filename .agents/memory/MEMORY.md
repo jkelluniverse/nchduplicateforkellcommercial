@@ -1,2 +1,0 @@
-- [Rent delinquency month-rollover](rent-delinquency-rollover.md) — getRentStatus must carry unpaid balances across the 1st; measure daysOverdue from the earliest missed month, using rent-applied (not raw) prior-month dollars.
-- [DoorLoop tenant → directory mapping](doorloop-tenant-mapping.md) — map DoorLoop tenants to the current lease via lease.name + LEASE_TENANT filter; never "first interest match".

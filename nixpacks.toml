@@ -1,10 +1,9 @@
 [phases.setup]
-nixPkgs = ["nodejs_22", "libreoffice", "python3", "python3Packages.pip"]
+nixPkgs = ["nodejs_22"]
 
 [phases.install]
 cmds = [
-  "npx -y pnpm@10.26.1 install --frozen-lockfile",
-  "pip install -r artifacts/api-server/backend/requirements.txt --break-system-packages"
+  "npx -y pnpm@10.26.1 install --frozen-lockfile"
 ]
 
 [phases.build]
@@ -13,6 +12,8 @@ cmds = [
   "npx -y pnpm@10.26.1 --filter @workspace/api-server run build"
 ]
 
+# On boot: push the Drizzle schema to THIS app's own database (separate, empty
+# of NCH data), then start the API server (which also serves the built SPA).
 [start]
 cmd = "npx -y pnpm@10.26.1 --filter @workspace/db run push-force && node --enable-source-maps artifacts/api-server/dist/index.mjs"
 
