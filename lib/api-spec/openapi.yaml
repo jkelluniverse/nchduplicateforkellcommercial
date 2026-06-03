@@ -1,0 +1,1689 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: NCH Operations API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: auth
+    description: Authentication
+  - name: dashboard
+    description: Dashboard data
+  - name: jobs
+    description: Job tracker
+  - name: receipts
+    description: Job receipts
+  - name: invoices
+    description: Estimates and invoices
+  - name: expenses
+    description: General expenses
+  - name: placements
+    description: ICONN placements
+  - name: properties
+    description: Property directory
+  - name: tasks
+    description: Task and work order manager
+  - name: messages
+    description: Team messaging
+  - name: appointments
+    description: Calendar and appointments
+  - name: activity
+    description: Activity feed
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login with username and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginBody"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout current user
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get dashboard summary for current user
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /activity:
+    get:
+      operationId: getActivity
+      tags: [activity]
+      summary: Get recent activity feed
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Activity feed
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityItem"
+
+  /jobs:
+    get:
+      operationId: listJobs
+      tags: [jobs]
+      summary: List all jobs
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [estimate, deposit_received, in_progress, invoiced, paid, complete, closed]
+      responses:
+        "200":
+          description: List of jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
+    post:
+      operationId: createJob
+      tags: [jobs]
+      summary: Create a new job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobBody"
+      responses:
+        "201":
+          description: Created job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+
+  /jobs/{jobId}:
+    get:
+      operationId: getJob
+      tags: [jobs]
+      summary: Get job details
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateJob
+      tags: [jobs]
+      summary: Update job status or details
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateJobBody"
+      responses:
+        "200":
+          description: Updated job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+
+  /jobs/{jobId}/receipts:
+    get:
+      operationId: listJobReceipts
+      tags: [receipts]
+      summary: List receipts for a job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of receipts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Receipt"
+    post:
+      operationId: createReceipt
+      tags: [receipts]
+      summary: Log a receipt for a job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReceiptBody"
+      responses:
+        "201":
+          description: Created receipt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Receipt"
+
+  /jobs/{jobId}/generate-estimate:
+    post:
+      operationId: generateEstimate
+      tags: [invoices]
+      summary: Generate estimate PDF for a job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Generated estimate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneratedDocument"
+
+  /jobs/{jobId}/generate-invoice:
+    post:
+      operationId: generateInvoice
+      tags: [invoices]
+      summary: Generate invoice PDF for a job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Generated invoice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneratedDocument"
+
+  /invoices:
+    get:
+      operationId: listInvoices
+      tags: [invoices]
+      summary: List all invoices
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [paid, unpaid]
+      responses:
+        "200":
+          description: List of invoices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Invoice"
+
+  /invoices/{invoiceId}/mark-paid:
+    post:
+      operationId: markInvoicePaid
+      tags: [invoices]
+      summary: Mark invoice as paid
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated invoice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+
+  /expenses:
+    get:
+      operationId: listExpenses
+      tags: [expenses]
+      summary: List general expenses
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [unsorted, sorted]
+      responses:
+        "200":
+          description: List of expenses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Expense"
+    post:
+      operationId: createExpense
+      tags: [expenses]
+      summary: Submit a general expense
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateExpenseBody"
+      responses:
+        "201":
+          description: Created expense
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Expense"
+
+  /expenses/{expenseId}:
+    patch:
+      operationId: updateExpense
+      tags: [expenses]
+      summary: Update expense (Jacob categorizes/sorts)
+      parameters:
+        - name: expenseId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateExpenseBody"
+      responses:
+        "200":
+          description: Updated expense
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Expense"
+
+  /placements:
+    get:
+      operationId: listPlacements
+      tags: [placements]
+      summary: List ICONN placements
+      responses:
+        "200":
+          description: List of placements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Placement"
+    post:
+      operationId: createPlacement
+      tags: [placements]
+      summary: Log a new ICONN placement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlacementBody"
+      responses:
+        "201":
+          description: Created placement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Placement"
+
+  /placements/{placementId}/mark-paid:
+    post:
+      operationId: markPlacementPaid
+      tags: [placements]
+      summary: Mark placement as paid
+      parameters:
+        - name: placementId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated placement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Placement"
+
+  /placements/summary:
+    get:
+      operationId: getPlacementsSummary
+      tags: [placements]
+      summary: Get YTD placements summary
+      responses:
+        "200":
+          description: Placements summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlacementsSummary"
+
+  /properties:
+    get:
+      operationId: listProperties
+      tags: [properties]
+      summary: List all properties
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: group
+          in: query
+          schema:
+            type: string
+            enum: [R1, R2, R3]
+      responses:
+        "200":
+          description: List of properties
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Property"
+
+  /properties/{propertyId}:
+    get:
+      operationId: getProperty
+      tags: [properties]
+      summary: Get property details
+      parameters:
+        - name: propertyId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Property details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Property"
+
+  /tasks:
+    get:
+      operationId: listTasks
+      tags: [tasks]
+      summary: List tasks
+      parameters:
+        - name: assignedTo
+          in: query
+          schema:
+            type: string
+            enum: [mike, jack, jacob]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, in_progress, done]
+      responses:
+        "200":
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+    post:
+      operationId: createTask
+      tags: [tasks]
+      summary: Create a task or work order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskBody"
+      responses:
+        "201":
+          description: Created task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /tasks/{taskId}:
+    patch:
+      operationId: updateTask
+      tags: [tasks]
+      summary: Update a task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskBody"
+      responses:
+        "200":
+          description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+    delete:
+      operationId: deleteTask
+      tags: [tasks]
+      summary: Delete a task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /tasks/{taskId}/complete:
+    put:
+      operationId: completeTask
+      tags: [tasks]
+      summary: Mark a task complete
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /tasks/{taskId}/comments:
+    get:
+      operationId: listTaskComments
+      tags: [tasks]
+      summary: List comments on a task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of comments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskComment"
+    post:
+      operationId: createTaskComment
+      tags: [tasks]
+      summary: Add a comment to a task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskCommentBody"
+      responses:
+        "201":
+          description: Created comment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskComment"
+
+  /messages:
+    get:
+      operationId: listMessages
+      tags: [messages]
+      summary: List messages
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+    post:
+      operationId: sendMessage
+      tags: [messages]
+      summary: Send a message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageBody"
+      responses:
+        "201":
+          description: Sent message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+
+  /messages/unread-count:
+    get:
+      operationId: getUnreadMessageCount
+      tags: [messages]
+      summary: Get unread message count for current user
+      responses:
+        "200":
+          description: Unread count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnreadCount"
+
+  /messages/mark-read:
+    post:
+      operationId: markMessagesRead
+      tags: [messages]
+      summary: Mark all messages as read for current user
+      responses:
+        "200":
+          description: Marked read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /appointments:
+    get:
+      operationId: listAppointments
+      tags: [appointments]
+      summary: List appointments
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: List of appointments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Appointment"
+    post:
+      operationId: createAppointment
+      tags: [appointments]
+      summary: Create an appointment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAppointmentBody"
+      responses:
+        "201":
+          description: Created appointment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Appointment"
+
+  /appointments/{appointmentId}:
+    patch:
+      operationId: updateAppointment
+      tags: [appointments]
+      summary: Update an appointment
+      parameters:
+        - name: appointmentId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAppointmentBody"
+      responses:
+        "200":
+          description: Updated appointment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Appointment"
+    delete:
+      operationId: deleteAppointment
+      tags: [appointments]
+      summary: Delete an appointment
+      parameters:
+        - name: appointmentId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /financial/summary:
+    get:
+      operationId: getFinancialSummary
+      tags: [dashboard]
+      summary: Get financial summary (Jacob only, simplified for others)
+      responses:
+        "200":
+          description: Financial summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinancialSummary"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+      required:
+        - success
+
+    LoginBody:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+
+    AuthResponse:
+      type: object
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        token:
+          type: string
+      required:
+        - user
+        - token
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+          enum: [mike, jack, jacob]
+        email:
+          type: string
+        phone:
+          type: string
+      required:
+        - id
+        - name
+        - username
+        - role
+
+    DashboardSummary:
+      type: object
+      properties:
+        activeJobsCount:
+          type: integer
+        todaysTasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+        todaysAppointments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Appointment"
+        unreadMessages:
+          type: integer
+        overdueTasksCount:
+          type: integer
+        overBudgetJobsCount:
+          type: integer
+        unsortedExpensesCount:
+          type: integer
+        unpaidInvoicesCount:
+          type: integer
+        recentJobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+      required:
+        - activeJobsCount
+        - todaysTasks
+        - todaysAppointments
+        - unreadMessages
+        - overdueTasksCount
+        - overBudgetJobsCount
+        - unsortedExpensesCount
+        - unpaidInvoicesCount
+        - recentJobs
+
+    ActivityItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+        description:
+          type: string
+        user:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        linkedEntity:
+          type: string
+        linkedId:
+          type: integer
+      required:
+        - id
+        - type
+        - description
+        - user
+        - createdAt
+
+    Job:
+      type: object
+      properties:
+        id:
+          type: integer
+        jobNumber:
+          type: string
+        client:
+          type: string
+        address:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [estimate, deposit_received, in_progress, invoiced, paid, complete, closed]
+        estimateAmount:
+          type: number
+        depositAmount:
+          type: number
+        totalCosts:
+          type: number
+        marginPercent:
+          type: number
+        isOverBudget:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - jobNumber
+        - client
+        - address
+        - status
+        - estimateAmount
+        - depositAmount
+        - totalCosts
+        - isOverBudget
+        - createdAt
+        - updatedAt
+
+    JobDetail:
+      allOf:
+        - $ref: "#/components/schemas/Job"
+        - type: object
+          properties:
+            receipts:
+              type: array
+              items:
+                $ref: "#/components/schemas/Receipt"
+            notes:
+              type: array
+              items:
+                $ref: "#/components/schemas/JobNote"
+            statusHistory:
+              type: array
+              items:
+                $ref: "#/components/schemas/StatusChange"
+          required:
+            - receipts
+            - notes
+            - statusHistory
+
+    CreateJobBody:
+      type: object
+      properties:
+        client:
+          type: string
+          enum: [BSMK, Coastal Management LLC]
+        address:
+          type: string
+        description:
+          type: string
+        estimateAmount:
+          type: number
+      required:
+        - client
+        - address
+        - description
+        - estimateAmount
+
+    UpdateJobBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [estimate, deposit_received, in_progress, invoiced, paid, complete, closed]
+        description:
+          type: string
+        estimateAmount:
+          type: number
+        note:
+          type: string
+
+    Receipt:
+      type: object
+      properties:
+        id:
+          type: integer
+        jobId:
+          type: integer
+        amount:
+          type: number
+        category:
+          type: string
+          enum: [materials, labor, subcontractor, equipment_tools, vehicle_fuel, other]
+        vendorName:
+          type: string
+        notes:
+          type: string
+        photoUrl:
+          type: string
+        driveFileId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+      required:
+        - id
+        - jobId
+        - amount
+        - category
+        - createdAt
+        - createdBy
+
+    CreateReceiptBody:
+      type: object
+      properties:
+        amount:
+          type: number
+        category:
+          type: string
+          enum: [materials, labor, subcontractor, equipment_tools, vehicle_fuel, other]
+        vendorName:
+          type: string
+        notes:
+          type: string
+        photoBase64:
+          type: string
+      required:
+        - amount
+        - category
+
+    JobNote:
+      type: object
+      properties:
+        id:
+          type: integer
+        jobId:
+          type: integer
+        note:
+          type: string
+        author:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - jobId
+        - note
+        - author
+        - createdAt
+
+    StatusChange:
+      type: object
+      properties:
+        id:
+          type: integer
+        fromStatus:
+          type: string
+        toStatus:
+          type: string
+        changedBy:
+          type: string
+        note:
+          type: string
+        changedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - toStatus
+        - changedBy
+        - changedAt
+
+    Invoice:
+      type: object
+      properties:
+        id:
+          type: integer
+        invoiceNumber:
+          type: string
+        jobId:
+          type: integer
+        jobNumber:
+          type: string
+        client:
+          type: string
+        address:
+          type: string
+        type:
+          type: string
+          enum: [estimate, invoice]
+        totalAmount:
+          type: number
+        depositPaid:
+          type: number
+        balanceDue:
+          type: number
+        status:
+          type: string
+          enum: [paid, unpaid]
+        issuedAt:
+          type: string
+          format: date-time
+        dueDate:
+          type: string
+          format: date-time
+        pdfUrl:
+          type: string
+        driveFileId:
+          type: string
+      required:
+        - id
+        - invoiceNumber
+        - jobId
+        - client
+        - type
+        - totalAmount
+        - status
+        - issuedAt
+
+    GeneratedDocument:
+      type: object
+      properties:
+        invoiceId:
+          type: integer
+        invoiceNumber:
+          type: string
+        pdfUrl:
+          type: string
+        driveFileId:
+          type: string
+      required:
+        - invoiceId
+        - invoiceNumber
+
+    Expense:
+      type: object
+      properties:
+        id:
+          type: integer
+        description:
+          type: string
+        category:
+          type: string
+          enum: [vehicle, tools, office, materials_misc, other]
+        amount:
+          type: number
+        status:
+          type: string
+          enum: [unsorted, sorted]
+        photoUrl:
+          type: string
+        submittedBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - description
+        - category
+        - amount
+        - status
+        - submittedBy
+        - createdAt
+
+    CreateExpenseBody:
+      type: object
+      properties:
+        description:
+          type: string
+        category:
+          type: string
+          enum: [vehicle, tools, office, materials_misc, other]
+        amount:
+          type: number
+        photoBase64:
+          type: string
+      required:
+        - description
+        - category
+        - amount
+
+    UpdateExpenseBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [unsorted, sorted]
+        category:
+          type: string
+          enum: [vehicle, tools, office, materials_misc, other]
+
+    Placement:
+      type: object
+      properties:
+        id:
+          type: integer
+        invoiceNumber:
+          type: string
+        address:
+          type: string
+        residentName:
+          type: string
+        placementDate:
+          type: string
+          format: date
+        paymentStatus:
+          type: string
+          enum: [paid, unpaid]
+        amount:
+          type: number
+        submittedBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - invoiceNumber
+        - address
+        - residentName
+        - placementDate
+        - paymentStatus
+        - amount
+        - submittedBy
+        - createdAt
+
+    CreatePlacementBody:
+      type: object
+      properties:
+        address:
+          type: string
+        residentName:
+          type: string
+        placementDate:
+          type: string
+          format: date
+      required:
+        - address
+        - residentName
+        - placementDate
+
+    PlacementsSummary:
+      type: object
+      properties:
+        ytdCount:
+          type: integer
+        ytdRevenue:
+          type: number
+        paidCount:
+          type: integer
+        unpaidCount:
+          type: integer
+      required:
+        - ytdCount
+        - ytdRevenue
+        - paidCount
+        - unpaidCount
+
+    Property:
+      type: object
+      properties:
+        id:
+          type: integer
+        address:
+          type: string
+        group:
+          type: string
+          enum: [R1, R2, R3]
+        tenantName:
+          type: string
+        landContractStatus:
+          type: string
+          enum: [active, current, delinquent, paid_off]
+        paymentStatus:
+          type: string
+          enum: [current, overdue, unknown]
+        balanceOwed:
+          type: number
+        leaseStartDate:
+          type: string
+          format: date
+        leaseEndDate:
+          type: string
+          format: date
+        monthlyPayment:
+          type: number
+        notes:
+          type: string
+      required:
+        - id
+        - address
+        - group
+        - landContractStatus
+        - paymentStatus
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        assignedTo:
+          type: string
+          enum: [mike, jack, jacob]
+        assignedBy:
+          type: string
+          enum: [mike, jack, jacob]
+          nullable: true
+        propertyAddress:
+          type: string
+          nullable: true
+        dueDate:
+          type: string
+          format: date
+          nullable: true
+        priority:
+          type: string
+          enum: [urgent, normal, low]
+        status:
+          type: string
+          enum: [pending, in_progress, done]
+        linkedJobId:
+          type: integer
+          nullable: true
+        linkedJobNumber:
+          type: string
+          nullable: true
+        createdBy:
+          type: string
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        isOverdue:
+          type: boolean
+        commentCount:
+          type: integer
+      required:
+        - id
+        - title
+        - assignedTo
+        - priority
+        - status
+        - createdBy
+        - createdAt
+        - isOverdue
+        - commentCount
+
+    CreateTaskBody:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        assignedTo:
+          type: string
+          enum: [mike, jack, jacob]
+        dueDate:
+          type: string
+          format: date
+        priority:
+          type: string
+          enum: [urgent, normal, low]
+        propertyAddress:
+          type: string
+        linkedJobId:
+          type: integer
+      required:
+        - title
+        - assignedTo
+        - priority
+
+    UpdateTaskBody:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        assignedTo:
+          type: string
+          enum: [mike, jack, jacob]
+        dueDate:
+          type: string
+          format: date
+        priority:
+          type: string
+          enum: [urgent, normal, low]
+        status:
+          type: string
+          enum: [pending, in_progress, done]
+        propertyAddress:
+          type: string
+        linkedJobId:
+          type: integer
+
+    TaskComment:
+      type: object
+      properties:
+        id:
+          type: integer
+        taskId:
+          type: integer
+        authorRole:
+          type: string
+          enum: [mike, jack, jacob]
+        authorName:
+          type: string
+        comment:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - taskId
+        - authorRole
+        - authorName
+        - comment
+        - createdAt
+
+    CreateTaskCommentBody:
+      type: object
+      properties:
+        comment:
+          type: string
+      required:
+        - comment
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: integer
+        content:
+          type: string
+        author:
+          type: string
+        authorRole:
+          type: string
+          enum: [mike, jack, jacob]
+        mentions:
+          type: array
+          items:
+            type: string
+        linkedJobId:
+          type: integer
+        linkedJobNumber:
+          type: string
+        attachmentUrl:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        isRead:
+          type: boolean
+      required:
+        - id
+        - content
+        - author
+        - authorRole
+        - createdAt
+        - isRead
+
+    SendMessageBody:
+      type: object
+      properties:
+        content:
+          type: string
+        mentions:
+          type: array
+          items:
+            type: string
+        linkedJobId:
+          type: integer
+        attachmentBase64:
+          type: string
+      required:
+        - content
+
+    UnreadCount:
+      type: object
+      properties:
+        count:
+          type: integer
+      required:
+        - count
+
+    Appointment:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        location:
+          type: string
+        notes:
+          type: string
+        attendees:
+          type: array
+          items:
+            type: string
+        linkedJobId:
+          type: integer
+        linkedJobNumber:
+          type: string
+        createdBy:
+          type: string
+        ownerRole:
+          type: string
+          enum: [mike, jack, jacob]
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - startTime
+        - ownerRole
+        - createdBy
+        - createdAt
+
+    CreateAppointmentBody:
+      type: object
+      properties:
+        title:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        location:
+          type: string
+        notes:
+          type: string
+        attendees:
+          type: array
+          items:
+            type: string
+        linkedJobId:
+          type: integer
+      required:
+        - title
+        - startTime
+
+    UpdateAppointmentBody:
+      type: object
+      properties:
+        title:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        location:
+          type: string
+        notes:
+          type: string
+        attendees:
+          type: array
+          items:
+            type: string
+        linkedJobId:
+          type: integer
+
+    FinancialSummary:
+      type: object
+      properties:
+        healthStatus:
+          type: string
+          enum: [healthy, attention_needed, critical]
+        monthlyRevenue:
+          type: number
+        monthlyExpenses:
+          type: number
+        netCashPosition:
+          type: number
+        outstandingInvoicesTotal:
+          type: number
+        activeJobsCount:
+          type: integer
+        ytdIconnPlacements:
+          type: integer
+        ytdIconnRevenue:
+          type: number
+        isFullAccess:
+          type: boolean
+      required:
+        - healthStatus
+        - isFullAccess

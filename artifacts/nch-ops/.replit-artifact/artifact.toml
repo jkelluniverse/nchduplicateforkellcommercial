@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "NCH Operations"
+version = "1.0.0"
+id = "artifacts/nch-ops"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18213
+
+[services.development]
+run = "pnpm --filter @workspace/nch-ops run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/nch-ops", "run", "build" ]
+publicDir = "artifacts/nch-ops/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18213"
+BASE_PATH = "/"

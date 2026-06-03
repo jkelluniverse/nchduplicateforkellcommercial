@@ -1,0 +1,23 @@
+{
+  "name": "NCH Operations",
+  "short_name": "NCH Ops",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#8B0000",
+  "description": "Nice City Homes LLC Operations Hub",
+  "icons": [
+    {
+      "src": "/assets/NCH_LOGO.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/NCH_LOGO.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

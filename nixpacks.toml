@@ -1,0 +1,21 @@
+[phases.setup]
+nixPkgs = ["nodejs_22", "libreoffice", "python3", "python3Packages.pip"]
+
+[phases.install]
+cmds = [
+  "npx -y pnpm@10.26.1 install --frozen-lockfile",
+  "pip install -r artifacts/api-server/backend/requirements.txt --break-system-packages"
+]
+
+[phases.build]
+cmds = [
+  "npx -y pnpm@10.26.1 --filter @workspace/nch-ops run build",
+  "npx -y pnpm@10.26.1 --filter @workspace/api-server run build"
+]
+
+[start]
+cmd = "npx -y pnpm@10.26.1 --filter @workspace/db run push-force && node --enable-source-maps artifacts/api-server/dist/index.mjs"
+
+[variables]
+BASE_PATH = "/"
+PORT = "8080"

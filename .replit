@@ -1,0 +1,35 @@
+modules = ["nodejs-24", "python-3.11", "postgresql-16"]
+
+[[artifacts]]
+id = "artifacts/api-server"
+
+[[artifacts]]
+id = "artifacts/mockup-sandbox"
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[nix]
+channel = "stable-25_05"
+packages = ["freetype", "glibcLocales"]
+
+# Environment variables / secrets are NOT stored here. Configure them in the
+# hosting platform (Railway) or a local .env file. See .env.example.
+# Kell Commercial uses its OWN separate database and its OWN read-only Rentec
+# Direct connection — never NCH's DoorLoop / Google / database secrets.
