@@ -31,7 +31,7 @@ const STATUS_COLOR: Record<RentStatusValue, string> = {
   paid: "text-green-700 bg-green-50",
   unpaid: "text-red-700 bg-red-50",
   late: "text-amber-700 bg-amber-50",
-  delinquent: "text-[#8B0000] bg-red-100",
+  delinquent: "text-[#B23A2E] bg-red-100",
   partial: "text-amber-700 bg-amber-50",
 };
 
@@ -181,7 +181,7 @@ export function DetailSheet({ propertyId, currentMonth, currentYear, onClose }: 
                   {currentMonthRow.daysOverdue > 0 && (
                     <div>
                       <p className="text-xs text-muted-foreground">Days Overdue</p>
-                      <p className="text-base font-bold text-[#8B0000]">{currentMonthRow.daysOverdue}</p>
+                      <p className="text-base font-bold text-[#B23A2E]">{currentMonthRow.daysOverdue}</p>
                     </div>
                   )}
                 </div>

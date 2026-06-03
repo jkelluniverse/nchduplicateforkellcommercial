@@ -7,7 +7,7 @@ import { Search } from "lucide-react";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authHeaders() {
-  return { Authorization: `Bearer ${localStorage.getItem("nch_token")}`, "Content-Type": "application/json" };
+  return { Authorization: `Bearer ${localStorage.getItem("kc_token")}`, "Content-Type": "application/json" };
 }
 
 interface Property {

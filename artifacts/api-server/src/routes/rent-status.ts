@@ -27,8 +27,8 @@ const LATE_FEE_AMOUNT = 75;
 const LATE_FEE_AFTER_DAY = 5; // applied once the calendar day-of-month is > 5 (i.e. starting the 6th)
 const DELINQUENT_DAYS = 30; // 30+ days past 1st of billing month
 
-function useDoorLoop(): boolean {
-  return process.env["USE_DOORLOOP"] === "true";
+function useRentec(): boolean {
+  return Boolean(process.env["RENTEC_API_KEY"]);
 }
 
 /**
@@ -179,7 +179,7 @@ function buildSummaryFromDoorLoopRows(
     total_expected: round2(sumMonthlyRent),
     collection_rate: collectionRate,
     last_updated_at: new Date().toISOString(),
-    source: "doorloop" as const,
+    source: "rentec" as const,
   };
 }
 
@@ -423,7 +423,7 @@ function mapRow(r: RentStatus) {
 router.get("/rent-status/summary", requireAuth, async (_req: AuthRequest, res): Promise<void> => {
   const { month, year } = currentMonthYear();
 
-  if (useDoorLoop()) {
+  if (useRentec()) {
     const remote = await fetchFromDoorLoop(month, year);
     if (remote) { res.json(remote.summary); return; }
   }
@@ -443,7 +443,7 @@ router.get("/rent-status/summary", requireAuth, async (_req: AuthRequest, res): 
 router.get("/rent-status/detail", requireAuth, async (_req: AuthRequest, res): Promise<void> => {
   const { month, year } = currentMonthYear();
 
-  if (useDoorLoop()) {
+  if (useRentec()) {
     const remote = await fetchFromDoorLoop(month, year);
     if (remote) {
       const sorted = [...remote.rows].sort((a, b) => {

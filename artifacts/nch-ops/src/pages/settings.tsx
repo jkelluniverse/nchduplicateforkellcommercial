@@ -63,8 +63,8 @@ export default function Settings() {
         </Button>
         
         <p className="text-center text-xs text-muted-foreground">
-          NCH Operations App v1.0.0<br/>
-          &copy; {new Date().getFullYear()} Nice City Homes LLC
+          Kell Commercial Leasing v1.0.0<br/>
+          &copy; {new Date().getFullYear()} Kell Commercial
         </p>
       </div>
     </div>

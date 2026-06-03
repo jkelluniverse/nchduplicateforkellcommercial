@@ -28,7 +28,7 @@ async function sendMissedPromiseAlert(note: TenantPaymentNote): Promise<void> {
   const amountStr = note.expectedPaymentAmount
     ? ` · $${Number(note.expectedPaymentAmount).toLocaleString()}`
     : "";
-  const appUrl = "https://app.nicecityhomes.com";
+  const appUrl = process.env.APP_URL || "https://app.kellcommercial.com";
 
   void notifyUser("jacob", {
     title: "⚠️ Missed Promise",
@@ -37,7 +37,7 @@ async function sendMissedPromiseAlert(note: TenantPaymentNote): Promise<void> {
   }).catch(() => {});
 
   void sendEmail({
-    to: "jacob@nicecityhomes.com",
+    to: (process.env.ADMIN_EMAIL || "admin@kellcommercial.com"),
     subject: `Missed Payment Promise: ${note.tenantName} — ${note.propertyAddress}`,
     html:
       renderFieldsHtml([
@@ -48,7 +48,7 @@ async function sendMissedPromiseAlert(note: TenantPaymentNote): Promise<void> {
         ["Action", "Consider sending a 3-Day Notice"],
       ]) +
       `<p style="margin-top:16px;font-family:Arial,sans-serif;">` +
-      `<a href="${appUrl}">Open App → Document Maker</a></p>`,
+      `<a href="${appUrl}">Open App</a></p>`,
   }).catch(() => {});
 }
 
@@ -75,11 +75,11 @@ export async function runDailyReminders(): Promise<void> {
       void notifyUser("jacob", {
         title: "Payment Follow-up",
         body: `${note.propertyAddress} — payment expected today. Check if received.`,
-        url: "https://app.nicecityhomes.com",
+        url: process.env.APP_URL || "https://app.kellcommercial.com",
       }).catch(() => {});
 
       void sendEmail({
-        to: "jacob@nicecityhomes.com",
+        to: (process.env.ADMIN_EMAIL || "admin@kellcommercial.com"),
         subject: `Payment Follow-up: ${note.tenantName} — ${note.propertyAddress}`,
         html:
           renderFieldsHtml([
@@ -88,7 +88,7 @@ export async function runDailyReminders(): Promise<void> {
             ["Situation", note.situation],
             ["Expected", `${dateStr}${amountStr}`],
           ]) +
-          `<p style="margin-top:16px;font-family:Arial,sans-serif;"><a href="https://app.nicecityhomes.com">Open App</a></p>`,
+          `<p style="margin-top:16px;font-family:Arial,sans-serif;"><a href="${process.env.APP_URL || "https://app.kellcommercial.com"}">Open App</a></p>`,
       }).catch(() => {});
     }
 

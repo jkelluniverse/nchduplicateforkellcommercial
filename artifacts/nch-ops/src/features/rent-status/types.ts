@@ -14,7 +14,7 @@ export interface RentSummary {
   total_expected: number;
   collection_rate: number;
   last_updated_at: string;
-  source?: "doorloop" | "local";
+  source?: "rentec" | "local";
 }
 
 export interface RentRow {

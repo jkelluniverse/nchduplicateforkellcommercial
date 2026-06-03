@@ -68,7 +68,7 @@ export async function sendEmail(opts: {
     const gmail = google.gmail({ version: "v1", auth: auth as never });
 
     const message = [
-      `From: Nice City Homes <${impersonate}>`,
+      `From: Kell Commercial <${impersonate}>`,
       `To: ${opts.to}`,
       `Subject: ${opts.subject}`,
       "MIME-Version: 1.0",

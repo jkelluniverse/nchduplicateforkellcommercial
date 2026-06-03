@@ -10,7 +10,7 @@ const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 function authHeaders(): HeadersInit {
   return {
-    Authorization: `Bearer ${localStorage.getItem("nch_token") ?? ""}`,
+    Authorization: `Bearer ${localStorage.getItem("kc_token") ?? ""}`,
     "Content-Type": "application/json",
   };
 }
@@ -305,7 +305,7 @@ function AddNoteSheet({
         }
         disabled={!canSave || createMutation.isPending}
         className="flex-1 rounded-xl py-3 text-sm font-semibold text-white disabled:opacity-40"
-        style={{ backgroundColor: "#8B0000" }}
+        style={{ backgroundColor: "#B23A2E" }}
       >
         {createMutation.isPending ? "Saving…" : "Save Note"}
       </button>

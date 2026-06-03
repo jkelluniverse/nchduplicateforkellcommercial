@@ -10,7 +10,7 @@ function ensureConfigured(): boolean {
   if (configured) return true;
   const pub = process.env.VAPID_PUBLIC_KEY;
   const priv = process.env.VAPID_PRIVATE_KEY;
-  const subj = process.env.VAPID_SUBJECT || "mailto:admin@nicecityhomes.com";
+  const subj = process.env.VAPID_SUBJECT || "mailto:admin@kellcommercial.com";
   if (!pub || !priv) {
     logger.warn("VAPID keys not configured; push notifications disabled");
     return false;

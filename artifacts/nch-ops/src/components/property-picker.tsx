@@ -6,7 +6,7 @@ import { type PropertyOption, formatPropertyOption, searchProperties } from "@/l
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authHeaders() {
-  return { Authorization: `Bearer ${localStorage.getItem("nch_token")}` };
+  return { Authorization: `Bearer ${localStorage.getItem("kc_token")}` };
 }
 
 interface Props {

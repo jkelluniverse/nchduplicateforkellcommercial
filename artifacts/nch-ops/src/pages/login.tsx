@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import nchLogo from "@/assets/nch-logo.png";
+import kellLogo from "@/assets/kellcommercial-logo.svg";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -35,11 +35,11 @@ export default function Login() {
       <Card className="w-full max-w-sm">
         <CardHeader className="space-y-1 text-center">
           <img
-            src={nchLogo}
-            alt="Nice City Homes"
+            src={kellLogo}
+            alt="Kell Commercial Leasing"
             className="mx-auto mb-4 h-24 w-auto object-contain"
           />
-          <CardTitle className="text-2xl font-bold tracking-tight">NCH Operations</CardTitle>
+          <CardTitle className="text-2xl font-bold tracking-tight">Kell Commercial</CardTitle>
           <CardDescription>Command Center Login</CardDescription>
         </CardHeader>
         <CardContent>
@@ -50,7 +50,7 @@ export default function Login() {
                 id="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="mike, jack, or jacob"
+                placeholder="username"
                 required
                 className="h-12 text-lg"
               />

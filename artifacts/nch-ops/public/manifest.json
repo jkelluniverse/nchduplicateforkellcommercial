@@ -1,20 +1,20 @@
 {
-  "name": "NCH Operations",
-  "short_name": "NCH Ops",
+  "name": "Kell Commercial Leasing",
+  "short_name": "Kell Commercial",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#8B0000",
-  "description": "Nice City Homes LLC Operations Hub",
+  "theme_color": "#B23A2E",
+  "description": "Kell Commercial Leasing — payment tracking",
   "icons": [
     {
-      "src": "/assets/NCH_LOGO.png",
+      "src": "/assets/kellcommercial-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
-      "src": "/assets/NCH_LOGO.png",
+      "src": "/assets/kellcommercial-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

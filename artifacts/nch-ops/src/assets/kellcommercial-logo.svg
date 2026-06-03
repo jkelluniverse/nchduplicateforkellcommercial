@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 430" width="720" height="430" role="img" aria-label="Kell Commercial Leasing">
+  <rect width="720" height="430" fill="#ffffff"/>
+  <!-- KELL wordmark -->
+  <text x="20" y="190" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="210" letter-spacing="2" fill="#B23A2E">KELL</text>
+  <!-- EST. 1978 badge + ruler mark -->
+  <g>
+    <rect x="22" y="232" width="170" height="150" fill="none" stroke="#B23A2E" stroke-width="5"/>
+    <text x="107" y="292" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="30" fill="#C9A24B">EST. 1978</text>
+    <rect x="47" y="330" width="120" height="30" fill="#B23A2E"/>
+    <g stroke="#ffffff" stroke-width="3.5">
+      <line x1="65" y1="360" x2="65" y2="344"/>
+      <line x1="89" y1="360" x2="89" y2="344"/>
+      <line x1="113" y1="360" x2="113" y2="344"/>
+      <line x1="137" y1="360" x2="137" y2="344"/>
+      <line x1="161" y1="360" x2="161" y2="344"/>
+    </g>
+  </g>
+  <!-- COMMERCIAL LEASING -->
+  <text x="215" y="298" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="62" fill="#1A1A1A">COMMERCIAL</text>
+  <text x="215" y="368" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="62" fill="#1A1A1A">LEASING</text>
+  <line x1="215" y1="388" x2="704" y2="388" stroke="#B23A2E" stroke-width="5"/>
+</svg>

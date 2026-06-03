@@ -38,7 +38,7 @@ export function NotificationBanner() {
   };
 
   return (
-    <div className="flex items-start gap-3 bg-[#8B0000] text-white px-4 py-3 text-sm">
+    <div className="flex items-start gap-3 bg-[#B23A2E] text-white px-4 py-3 text-sm">
       <Bell className="w-5 h-5 mt-0.5 flex-shrink-0" />
       <p className="flex-1 leading-snug">
         Get notified when tasks are assigned to you.{" "}

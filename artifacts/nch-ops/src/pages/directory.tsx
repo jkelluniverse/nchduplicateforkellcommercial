@@ -11,7 +11,7 @@ import { formatPhone } from "@/lib/utils";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authHeaders() {
-  return { Authorization: `Bearer ${localStorage.getItem("nch_token")}`, "Content-Type": "application/json" };
+  return { Authorization: `Bearer ${localStorage.getItem("kc_token")}`, "Content-Type": "application/json" };
 }
 
 interface Property {
@@ -278,7 +278,7 @@ export default function Directory() {
             <p className="font-medium">{search ? "No results" : "No properties synced yet"}</p>
             {!search && (
               <Button variant="outline" className="mt-4" onClick={() => syncMutation.mutate()}>
-                <RefreshCw className="w-4 h-4 mr-2" />Sync from DoorLoop
+                <RefreshCw className="w-4 h-4 mr-2" />Sync from Rentec
               </Button>
             )}
           </div>

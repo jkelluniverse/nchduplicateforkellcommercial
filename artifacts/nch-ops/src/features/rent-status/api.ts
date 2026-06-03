@@ -10,7 +10,7 @@ const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 function authHeaders(): HeadersInit {
   return {
-    Authorization: `Bearer ${localStorage.getItem("nch_token") ?? ""}`,
+    Authorization: `Bearer ${localStorage.getItem("kc_token") ?? ""}`,
     "Content-Type": "application/json",
   };
 }

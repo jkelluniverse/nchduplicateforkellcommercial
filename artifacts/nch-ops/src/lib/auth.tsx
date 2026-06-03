@@ -16,16 +16,16 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem("nch_token"));
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem("kc_token"));
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
   useEffect(() => {
     setAuthTokenGetter(() => token);
     if (token) {
-      localStorage.setItem("nch_token", token);
+      localStorage.setItem("kc_token", token);
     } else {
-      localStorage.removeItem("nch_token");
+      localStorage.removeItem("kc_token");
       // Drop any cached Drive preview blobs so a different user on the
       // same browser can't reopen the previous user's files from IDB.
       void clearPreviewCache();

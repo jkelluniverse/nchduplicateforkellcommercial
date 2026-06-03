@@ -30,7 +30,7 @@ const STATUS_DOT: Record<RentStatusValue, string> = {
   paid: "bg-green-500",
   unpaid: "bg-red-500",
   late: "bg-amber-500",
-  delinquent: "bg-[#8B0000]",
+  delinquent: "bg-[#B23A2E]",
   partial: "bg-amber-400",
 };
 
@@ -128,9 +128,9 @@ export function HistoryModal({ open, onOpenChange, initialMonth, initialYear }: 
                   line2={summary.unpaid.late_fees_outstanding > 0 ? `${fmtMoney(summary.unpaid.late_fees_outstanding)} fees` : undefined}
                 />
                 <StatCard
-                  borderColor="border-l-[#8B0000]"
+                  borderColor="border-l-[#B23A2E]"
                   label="DELINQUENT"
-                  countColor="text-[#8B0000]"
+                  countColor="text-[#B23A2E]"
                   count={summary.delinquent.count}
                   line1={`${fmtMoney(summary.delinquent.total_outstanding)} due`}
                   line2={summary.delinquent.avg_days_overdue > 0 ? `Avg ${summary.delinquent.avg_days_overdue}d over` : undefined}

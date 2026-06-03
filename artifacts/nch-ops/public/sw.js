@@ -1,4 +1,4 @@
-/* NCH Operations service worker — push notifications */
+/* Kell Commercial service worker — push notifications */
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
@@ -13,9 +13,9 @@ self.addEventListener("push", (event) => {
   try {
     data = event.data ? event.data.json() : {};
   } catch (_) {
-    data = { title: "NCH Team", body: event.data ? event.data.text() : "" };
+    data = { title: "Kell Commercial", body: event.data ? event.data.text() : "" };
   }
-  const title = data.title || "NCH Team";
+  const title = data.title || "Kell Commercial";
   // Derive a stable tag from the destination URL so task notifications and
   // chat notifications don't replace each other.
   const url = data.url || "/messages";

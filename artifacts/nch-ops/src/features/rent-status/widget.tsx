@@ -77,13 +77,13 @@ export function RentStatusWidget() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-bold">Rent Collection</h2>
-                {summary.source === "doorloop" && (
+                {summary.source === "rentec" && (
                   <span
                     className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded"
-                    title="Live data pulled from DoorLoop"
+                    title="Live data pulled from Rentec Direct"
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Live · DoorLoop
+                    Live · Rentec
                   </span>
                 )}
               </div>
@@ -136,10 +136,10 @@ export function RentStatusWidget() {
               line2={summary.unpaid.late_fees_outstanding > 0 ? `${fmtMoney(summary.unpaid.late_fees_outstanding)} fees due` : undefined}
             />
             <StatCard
-              borderColor="border-l-[#8B0000]"
+              borderColor="border-l-[#B23A2E]"
               icon="🔴"
               label="DELINQUENT"
-              countColor="text-[#8B0000]"
+              countColor="text-[#B23A2E]"
               count={summary.delinquent.count}
               line1={`${fmtMoney(summary.delinquent.total_outstanding)} outstanding`}
               line2={summary.delinquent.avg_days_overdue > 0 ? `Avg ${summary.delinquent.avg_days_overdue} days over` : undefined}
@@ -149,9 +149,9 @@ export function RentStatusWidget() {
           {/* Collection rate */}
           <CollectionRate summary={summary} />
 
-          {/* Late-fee empty state — DoorLoop posts late-fee charges on the
+          {/* Late-fee empty state — Late-fee charges, when present, post on the
               11th, so before then we show a small note to explain the zero. */}
-          {summary.source === "doorloop" &&
+          {summary.source === "rentec" &&
             summary.unpaid.late_fees_outstanding === 0 &&
             summary.late.late_fees_collected === 0 &&
             new Date().getDate() < 11 && (
@@ -163,8 +163,8 @@ export function RentStatusWidget() {
           {/* Needs Attention */}
           <div className="border-t border-border pt-3" id="needs-attention">
             <div className="flex items-center gap-1.5 mb-0.5 px-0.5">
-              <AlertCircle className="w-4 h-4 text-[#8B0000]" />
-              <h3 className="text-sm font-bold text-[#8B0000]">Needs Attention</h3>
+              <AlertCircle className="w-4 h-4 text-[#B23A2E]" />
+              <h3 className="text-sm font-bold text-[#B23A2E]">Needs Attention</h3>
             </div>
             <p className="text-[11px] text-muted-foreground px-0.5 mb-2">
               30+ days past due — notice eligible
@@ -183,7 +183,7 @@ export function RentStatusWidget() {
                       onClick={() => setSelectedPropertyId(r.propertyId)}
                       className="w-full flex items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-muted/60 active:bg-muted transition-colors"
                     >
-                      <span className="w-2 h-2 rounded-full shrink-0 bg-[#8B0000]" />
+                      <span className="w-2 h-2 rounded-full shrink-0 bg-[#B23A2E]" />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{r.address}</p>
                         <p className="text-xs text-muted-foreground truncate">
@@ -194,7 +194,7 @@ export function RentStatusWidget() {
                         <p className="text-sm font-semibold">
                           {fmtMoney(r.monthlyRent + r.lateFeeDue)}
                         </p>
-                        <p className="text-[10px] font-bold text-[#8B0000]">
+                        <p className="text-[10px] font-bold text-[#B23A2E]">
                           {r.daysOverdue}d over
                         </p>
                       </div>
