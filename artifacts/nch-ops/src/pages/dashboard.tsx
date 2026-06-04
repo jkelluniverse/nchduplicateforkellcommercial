@@ -96,7 +96,7 @@ export default function Dashboard() {
     query: { enabled: !!user, queryKey: getGetDashboardSummaryQueryKey() },
   });
   const summary = summaryRaw as unknown as {
-    rent?: { live: boolean; leaseCount: number; propertyCount: number; currentCount: number; pastDueCount: number; delinquentCount: number; pastDueAmount: number };
+    rent?: { live: boolean; source?: string | null; leaseCount: number; propertyCount: number; currentCount: number; pastDueCount: number; delinquentCount: number; pastDueAmount: number; expectedThisMonth?: number; collectedThisMonth?: number; remainingThisMonth?: number };
     overdueTasksCount?: number;
     todaysTasks?: Array<{ id: number; title: string; status: string; priority: string }>;
   } | undefined;
@@ -112,28 +112,47 @@ export default function Dashboard() {
 
   return (
     <div className="pb-8">
-      {/* Brand header — logo on a clean cream bar with a red→gold rule */}
+      {/* Brand header — centered logo on a clean cream bar with a red→gold rule */}
       <div className="bg-cream px-4 pt-10 pb-4 rounded-b-3xl shadow-sm border-b border-border">
         <img
           src={`${import.meta.env.BASE_URL}assets/kellcommercial-logo.svg`}
           alt="Kell Commercial Leasing"
-          className="h-14 w-auto"
+          className="h-16 w-auto mx-auto block"
         />
-        <div className="mt-3 h-1 w-full rounded-full bg-gradient-to-r from-primary via-gold to-transparent" />
-        <p className="text-sm text-muted-foreground mt-2 font-medium">
+        <div className="mt-3 h-1 w-full rounded-full bg-gradient-to-r from-transparent via-gold to-transparent" />
+        <p className="text-sm text-muted-foreground mt-2 font-medium text-center">
           {format(new Date(), "EEEE, MMMM do")}
         </p>
 
-        {/* Past-due headline */}
+        {/* Monthly collection headline — expected this month, shrinking as rent comes in */}
         <div className="mt-4 bg-primary text-primary-foreground rounded-2xl p-4 shadow-md">
-          <div className="flex items-center gap-2 text-primary-foreground/80 text-sm font-medium">
-            <DollarSign className="w-4 h-4" /> Past due
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-primary-foreground/80 text-sm font-medium">
+              <DollarSign className="w-4 h-4" /> Remaining to collect
+            </div>
+            <span className="text-xs text-primary-foreground/70 font-medium">{format(new Date(), "MMMM")}</span>
           </div>
           <p className="text-4xl font-extrabold mt-1 tabular-nums">
-            {isSummaryLoading ? "—" : fmtMoney(rent?.pastDueAmount ?? 0)}
+            {isSummaryLoading ? "—" : fmtMoney(rent?.remainingThisMonth ?? rent?.pastDueAmount ?? 0)}
           </p>
           <p className="text-primary-foreground/80 text-sm mt-1">
-            {isSummaryLoading ? " " : `${rent?.pastDueCount ?? 0} past due · ${rent?.currentCount ?? 0} current`}
+            {isSummaryLoading
+              ? " "
+              : `${fmtMoney(rent?.collectedThisMonth ?? 0)} collected of ${fmtMoney(rent?.expectedThisMonth ?? 0)} expected`}
+          </p>
+          {/* Collection progress */}
+          {!isSummaryLoading && (rent?.expectedThisMonth ?? 0) > 0 && (
+            <div className="mt-3 h-2 w-full rounded-full bg-primary-foreground/20 overflow-hidden">
+              <div
+                className="h-full bg-gold transition-all"
+                style={{
+                  width: `${Math.min(100, Math.max(0, ((rent?.collectedThisMonth ?? 0) / (rent?.expectedThisMonth || 1)) * 100))}%`,
+                }}
+              />
+            </div>
+          )}
+          <p className="text-primary-foreground/70 text-xs mt-2">
+            {isSummaryLoading ? " " : `${rent?.currentCount ?? 0} paid · ${rent?.pastDueCount ?? 0} outstanding`}
           </p>
         </div>
       </div>

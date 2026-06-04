@@ -77,13 +77,13 @@ export function RentStatusWidget() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-bold">Rent Collection</h2>
-                {summary.source === "rentec" && (
+                {(summary.source === "rentec" || summary.source === "ledger") && (
                   <span
                     className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded"
-                    title="Live data pulled from Rentec Direct"
+                    title={summary.source === "ledger" ? "Live from the Master Rent Ledger (Google Sheet)" : "Live data pulled from Rentec Direct"}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Live · Rentec
+                    {summary.source === "ledger" ? "Live · Ledger" : "Live · Rentec"}
                   </span>
                 )}
               </div>
@@ -151,7 +151,7 @@ export function RentStatusWidget() {
 
           {/* Late-fee empty state — Late-fee charges, when present, post on the
               11th, so before then we show a small note to explain the zero. */}
-          {summary.source === "rentec" &&
+          {summary.source !== "local" &&
             summary.unpaid.late_fees_outstanding === 0 &&
             summary.late.late_fees_collected === 0 &&
             new Date().getDate() < 11 && (

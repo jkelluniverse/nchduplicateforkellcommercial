@@ -12,9 +12,10 @@ export interface RentSummary {
   partial: { count: number; total_collected: number };
   total_collected_mtd: number;
   total_expected: number;
+  total_remaining?: number;
   collection_rate: number;
   last_updated_at: string;
-  source?: "rentec" | "local";
+  source?: "rentec" | "local" | "ledger";
 }
 
 export interface RentRow {

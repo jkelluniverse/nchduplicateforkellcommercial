@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { sql, gte } from "drizzle-orm";
 import { db, tasksTable, activityTable } from "@workspace/db";
 import { requireAuth, type AuthRequest } from "../middlewares/auth";
-import { getRentStatus } from "../services/rentec";
+import { getLiveRentStatus } from "../services/rent-source";
 
 const router: IRouter = Router();
 
@@ -24,23 +24,30 @@ router.get("/dashboard/summary", requireAuth, async (req: AuthRequest, res): Pro
   const todaysTasks = myTasks.filter((t) => t.dueDate && t.dueDate <= today);
   const overdueTasks = myTasks.filter((t) => isOverdue(t.dueDate) && t.status !== "done");
 
-  // Live rent snapshot from Rentec (read-only). Falls back to zeros when the
-  // Rentec connection is not configured/reachable so the dashboard still loads.
+  // Live rent snapshot — Google Sheet ledger (preferred) or Rentec. Falls back
+  // to zeros when no source is configured/reachable so the dashboard still loads.
   const now = new Date();
-  const snapshot = await getRentStatus(now.getMonth() + 1, now.getFullYear());
+  const live = await getLiveRentStatus(now.getMonth() + 1, now.getFullYear());
+  const snapshot = live?.data ?? null;
 
   const rows = snapshot?.rows ?? [];
   const pastDueRows = rows.filter((r) => r.status === "unpaid" || r.status === "late" || r.status === "partial" || r.status === "delinquent");
   const delinquentRows = rows.filter((r) => r.status === "delinquent");
   const currentRows = rows.filter((r) => r.status === "paid");
+  // Expected = full rent roll of occupied properties. Collected = rent received
+  // this month. Remaining starts at the full roll and shrinks as people pay.
+  const expectedThisMonth = rows.reduce((sum, r) => sum + (r.monthlyRent || 0), 0);
+  const collectedThisMonth = rows.reduce((sum, r) => sum + (r.amountPaid || 0), 0);
   const pastDueAmount = pastDueRows.reduce(
     (sum, r) => sum + Math.max(0, (r.monthlyRent || 0) - (r.amountPaid || 0)) + (r.lateFeeDue || 0),
     0,
   );
+  const remainingThisMonth = Math.max(0, expectedThisMonth - collectedThisMonth);
 
   res.json({
     rent: {
       live: snapshot !== null,
+      source: live?.source ?? null,
       fetchedAt: snapshot?.fetchedAt ?? null,
       leaseCount: rows.length,
       propertyCount: snapshot?.uniquePropertyCount ?? 0,
@@ -48,6 +55,9 @@ router.get("/dashboard/summary", requireAuth, async (req: AuthRequest, res): Pro
       pastDueCount: pastDueRows.length,
       delinquentCount: delinquentRows.length,
       pastDueAmount: Math.round(pastDueAmount * 100) / 100,
+      expectedThisMonth: Math.round(expectedThisMonth * 100) / 100,
+      collectedThisMonth: Math.round(collectedThisMonth * 100) / 100,
+      remainingThisMonth: Math.round(remainingThisMonth * 100) / 100,
     },
     overdueTasksCount: overdueTasks.length,
     todaysTasks: todaysTasks.map((t) => ({

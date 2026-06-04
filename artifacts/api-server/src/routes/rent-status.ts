@@ -19,7 +19,8 @@ import {
   type RentStatus,
 } from "@workspace/db";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth";
-import { getRentStatus as fetchRentecRentStatus, type DLRentRow } from "../services/rentec";
+import { getLiveRentStatus, hasLiveSource, type RentSource } from "../services/rent-source";
+import { type DLRentRow } from "../services/rentec";
 
 const router: IRouter = Router();
 
@@ -29,27 +30,28 @@ const LATE_FEE_AMOUNT = 75;
 const LATE_FEE_AFTER_DAY = 10;
 const DELINQUENT_DAYS = 30; // 30+ days past 1st of billing month → delinquent
 
-function useRentec(): boolean {
-  return Boolean(process.env["RENTEC_API_KEY"]);
+function useLive(): boolean {
+  return hasLiveSource();
 }
 
 /**
- * Build the dashboard summary + detail rows from a live DoorLoop snapshot.
- * Maps each DoorLoop lease/property to its local properties.id (by address
+ * Build the dashboard summary + detail rows from a live snapshot (Google Sheet
+ * ledger, or Rentec). Maps each property to its local properties.id (by address
  * substring) so the frontend's existing detail/log-payment flow keeps working.
  *
- * Returns null when DoorLoop is unreachable — caller falls back to local.
+ * Returns null when no live source is reachable — caller falls back to local.
  */
-async function fetchFromDoorLoop(
+async function fetchLive(
   month: number,
   year: number,
 ): Promise<{ summary: ReturnType<typeof buildSummaryFromDoorLoopRows>; rows: ReturnType<typeof mapDoorLoopRow>[] } | null> {
-  const snap = await fetchRentecRentStatus(month, year);
-  if (!snap) return null;
+  const result = await getLiveRentStatus(month, year);
+  if (!result) return null;
+  const { data: snap, source } = result;
   const localProps = await db.select().from(propertiesTable);
   const idx = buildPropIndex(localProps);
   const mappedRows = snap.rows.map((r, i) => mapDoorLoopRow(r, i, month, year, idx));
-  const summary = buildSummaryFromDoorLoopRows(mappedRows, month, year, snap.uniquePropertyCount);
+  const summary = buildSummaryFromDoorLoopRows(mappedRows, month, year, snap.uniquePropertyCount, source);
   return { summary, rows: mappedRows };
 }
 
@@ -127,6 +129,7 @@ function buildSummaryFromDoorLoopRows(
   month: number,
   year: number,
   uniquePropertyCount: number,
+  source: RentSource = "rentec",
 ) {
   const buckets: Record<RentStatus["status"], typeof rows> = {
     paid: [], unpaid: [], late: [], delinquent: [], partial: [],
@@ -162,6 +165,10 @@ function buildSummaryFromDoorLoopRows(
   const collectionRate = sumMonthlyRent > 0
     ? Math.round((totalCollectedMtd / sumMonthlyRent) * 1000) / 10
     : 0;
+  // Expected this month is the full rent roll of occupied properties; the
+  // remaining amount starts at the full roll on the 1st and shrinks as rent
+  // comes in through the month.
+  const remainingThisMonth = Math.max(0, round2(sumMonthlyRent - rentCollected));
 
   return {
     month: monthName(month, year),
@@ -187,9 +194,10 @@ function buildSummaryFromDoorLoopRows(
     partial: { count: buckets.partial.length, total_collected: round2(partialCollected) },
     total_collected_mtd: round2(totalCollectedMtd),
     total_expected: round2(sumMonthlyRent),
+    total_remaining: remainingThisMonth,
     collection_rate: collectionRate,
     last_updated_at: new Date().toISOString(),
-    source: "rentec" as const,
+    source,
   };
 }
 
@@ -433,8 +441,8 @@ function mapRow(r: RentStatus) {
 router.get("/rent-status/summary", requireAuth, async (_req: AuthRequest, res): Promise<void> => {
   const { month, year } = currentMonthYear();
 
-  if (useRentec()) {
-    const remote = await fetchFromDoorLoop(month, year);
+  if (useLive()) {
+    const remote = await fetchLive(month, year);
     if (remote) { res.json(remote.summary); return; }
   }
 
@@ -453,8 +461,8 @@ router.get("/rent-status/summary", requireAuth, async (_req: AuthRequest, res): 
 router.get("/rent-status/detail", requireAuth, async (_req: AuthRequest, res): Promise<void> => {
   const { month, year } = currentMonthYear();
 
-  if (useRentec()) {
-    const remote = await fetchFromDoorLoop(month, year);
+  if (useLive()) {
+    const remote = await fetchLive(month, year);
     if (remote) {
       const sorted = [...remote.rows].sort((a, b) => {
         const r = statusSortRank(a.status) - statusSortRank(b.status);
