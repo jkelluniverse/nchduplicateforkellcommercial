@@ -546,37 +546,46 @@ export interface RentecLedgerLine {
 
 /**
  * Normalized ledger lines for one property's Rentec transactions, mapped to the
- * statement layout (date · description · check# · debit · credit). Field names
- * vary by account, so every lookup is defensive. Running balance is computed by
- * the caller. Returns [] when there are no transactions.
+ * statement layout (date · description · check# · debit · credit). Running
+ * balance is computed by the caller.
+ *
+ * Rentec's /transactions returns a single signed `amount` (positive = money in /
+ * payment, negative = fee/expense/charge-out) plus a `summary.ending_balance`.
+ * We map the sign straight to the credit/debit columns so the caller's running
+ * balance (Σ credit − debit) reproduces Rentec's ending_balance exactly, rather
+ * than inferring charge-vs-payment from a (nonexistent) type string.
+ * Returns [] when there are no transactions.
  */
 export async function getPropertyLedgerLines(propertyId: string): Promise<RentecLedgerLine[]> {
   const txns = await getTransactionsForProperty(propertyId);
   const lines: RentecLedgerLine[] = [];
   for (const tx of txns) {
     const o = tx as RawObj;
-    const date = str(pick(o, "date", "transaction_date", "post_date", "entry_date", "created")) ?? "";
-    const typeStr = String(pick(o, "type", "transaction_type", "category", "entry_type") ?? "").toLowerCase();
-    const account = str(pick(o, "account", "account_name", "gl_account", "category_name", "gl"));
-    const memo = str(pick(o, "description", "memo", "comment", "note", "details"));
+    const raw = str(pick(o, "transaction_time", "date", "transaction_date", "post_date", "entry_date", "created")) ?? "";
+    // transaction_time is a full ISO timestamp; the statement shows yyyy-mm-dd.
+    const date = /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : raw;
+    const category = str(pick(o, "category_name", "account", "account_name", "gl_account", "gl"));
+    // `notes` carries the human-readable line ("Tenant Payment of 10.00…");
+    // `description` is usually blank and `memo` is a raw ID hash.
+    const note = str(pick(o, "notes", "description", "memo", "comment", "note", "details"));
     const amount = num(pick(o, "amount", "total", "value", "amount_total"));
     let debit = num(pick(o, "debit", "charge", "charge_amount"));
     let credit = num(pick(o, "credit", "payment", "amount_received", "paid", "payment_amount"));
+    // Rentec reports a single signed amount — split it into the two columns.
     if (debit === 0 && credit === 0 && amount !== 0) {
-      const isPayment = /payment|credit|receipt|deposit|paid/.test(typeStr);
-      const isCharge = /charge|invoice|fee|rent|bill|debit/.test(typeStr);
-      if (isPayment) credit = Math.abs(amount);
-      else if (isCharge) debit = Math.abs(amount);
-      else if (amount < 0) debit = Math.abs(amount);
-      else credit = amount;
+      if (amount > 0) credit = amount;
+      else debit = Math.abs(amount);
     }
     if (debit === 0 && credit === 0) continue;
-    const desc = memo || account || (typeStr ? typeStr.replace(/\b\w/g, (m) => m.toUpperCase()) : "Transaction");
+    const desc = note || category || "Transaction";
+    // "0000" is Rentec's placeholder check number for electronic (EasyPay) entries.
+    const refRaw = str(pick(o, "check_num", "check", "check_number", "reference", "ref"));
+    const reference = refRaw && refRaw !== "0000" ? refRaw : null;
     lines.push({
       date,
       description: desc,
-      subDescription: memo && account ? account : null,
-      reference: str(pick(o, "check", "check_number", "reference", "ref")) ?? null,
+      subDescription: note && category ? category : null,
+      reference,
       debit: debit || null,
       credit: credit || null,
     });
@@ -901,22 +910,28 @@ export async function getRentStatus(
  * Rentec filters transactions by renter_id; we resolve the lease's tenant first.
  */
 export async function getPaymentsForLease(leaseId: string): Promise<Array<{ id: string; date: string; lease: string; amountReceived: number }>> {
-  const tenants = await getTenants();
-  const tenant = tenants.find((t) => t.leaseId === leaseId);
-  if (!tenant) return [];
-  const txns = await getTransactionsForTenant(tenant.id);
+  // Resolve the lease's resident via the lease's own renter_id (tenants don't
+  // carry a lease id), then pull that renter's transactions.
+  const leases = await getLeases();
+  const lease = leases.find((l) => l.id === leaseId);
+  const renterId = lease?.renterId;
+  if (!renterId) return [];
+  const txns = await getTransactionsForTenant(renterId);
   return txns
     .filter((tx) => {
-      const type = String((tx as RawObj)["type"] ?? "").toLowerCase();
-      return type.includes("payment") || type.includes("credit");
+      const o = tx as RawObj;
+      // Payments are credits: pmt_type "CR" or a positive signed amount.
+      const pmtType = String(pick(o, "pmt_type", "type") ?? "").toUpperCase();
+      if (pmtType === "CR") return true;
+      return num(pick(o, "amount", "credit", "payment")) > 0;
     })
     .map((tx) => {
       const o = tx as RawObj;
       return {
-        id: String(pick(o, "id", "transaction_id") ?? ""),
-        date: str(pick(o, "date", "transaction_date")) ?? "",
+        id: String(pick(o, "transaction_id", "id") ?? ""),
+        date: (str(pick(o, "transaction_time", "date", "transaction_date")) ?? "").slice(0, 10),
         lease: leaseId,
-        amountReceived: num(pick(o, "amount", "credit", "payment")),
+        amountReceived: Math.abs(num(pick(o, "amount", "credit", "payment"))),
       };
     });
 }
