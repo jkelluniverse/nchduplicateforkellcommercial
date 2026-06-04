@@ -22,6 +22,7 @@ export interface LedgerLine {
   debit: number | null;
   credit: number | null;
   balance: number;
+  hidden?: boolean; // processing noise — counted in the balance, not displayed
 }
 
 export interface LedgerStatement {
@@ -118,12 +119,17 @@ export async function getPropertyLedger(
       if (propertyId) {
         const raw = await rentec.getPropertyLedgerLines(propertyId);
         if (raw.length > 0) {
-          const lines = withRunningBalance(raw.map((l) => ({ ...l })));
+          // Running balance accounts for EVERY transaction (incl. processing
+          // noise) so it ties out to Rentec's real balance; the account-balance
+          // card reads the latest cumulative balance. Only the displayed rows
+          // are filtered, leaving a clean charges-and-payments statement.
+          const all = withRunningBalance(raw.map((l) => ({ ...l })));
+          const lines = all.filter((l) => !l.hidden);
           return {
             source: "rentec",
             address,
             tenantName,
-            currentBalance: lines[0]?.balance ?? 0,
+            currentBalance: all[0]?.balance ?? 0,
             lines,
             fetchedAt: now,
           };

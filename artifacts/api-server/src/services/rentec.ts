@@ -542,6 +542,31 @@ export interface RentecLedgerLine {
   reference: string | null;
   debit: number | null;
   credit: number | null;
+  /**
+   * Card-processing noise (convenience fees and their internal offsets). These
+   * still count toward the running balance but are hidden from the statement so
+   * it reads as a clean rent ledger (charges + payments), not a payment-processor
+   * audit trail.
+   */
+  hidden?: boolean;
+}
+
+// Card-fee / processing chatter we don't want cluttering the rent statement.
+const LEDGER_NOISE_RE =
+  /convenience fee|processing fee|cc fee|card fee|merchant fee|service fee|e-?check fee|transaction fee/i;
+
+/** A transaction that's payment-processor noise rather than rent activity. */
+function isLedgerNoise(o: RawObj): boolean {
+  const text = [pick(o, "notes"), pick(o, "memo"), pick(o, "description")]
+    .map((v) => String(v ?? ""))
+    .join(" ");
+  if (LEDGER_NOISE_RE.test(text)) return true;
+  // The convenience-fee offset split: pmt_type "O" (Other) with no renter
+  // attached — an internal processor deduction, not a tenant charge/payment.
+  const pmtType = String(pick(o, "pmt_type") ?? "").toUpperCase();
+  const renterId = pick(o, "renter_id");
+  if (pmtType === "O" && (renterId === undefined || renterId === null)) return true;
+  return false;
 }
 
 /**
@@ -588,6 +613,7 @@ export async function getPropertyLedgerLines(propertyId: string): Promise<Rentec
       reference,
       debit: debit || null,
       credit: credit || null,
+      hidden: isLedgerNoise(o),
     });
   }
   return lines;
