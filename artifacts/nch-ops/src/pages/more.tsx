@@ -1,11 +1,32 @@
 import { Link } from "wouter";
+import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent } from "@/components/ui/card";
-import { Settings, Building2, Contact, CircleCheck as CheckCircle, LogOut } from "lucide-react";
+import { Settings, Building2, Contact, CircleCheck as CheckCircle, LogOut, Plug, Loader as Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+
+const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 export default function More() {
   const { logout } = useAuth();
+  const [diag, setDiag] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  async function testRentec() {
+    setTesting(true);
+    setDiag(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/rentec/diag`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("kc_token")}` },
+      });
+      const json = await r.json();
+      setDiag(JSON.stringify(json, null, 2));
+    } catch (err) {
+      setDiag(`Request failed: ${String(err)}`);
+    } finally {
+      setTesting(false);
+    }
+  }
 
   const links = [
     { href: "/properties", icon: <Building2 className="w-6 h-6" />, title: "Properties", desc: "Properties, units & payment status" },
@@ -36,6 +57,29 @@ export default function More() {
             </Card>
           </Link>
         ))}
+
+        {/* Rentec connection test — surfaces the live API result for debugging */}
+        <Card className="mb-3">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-4">
+              <div className="bg-primary/10 p-3 rounded-full text-primary">
+                <Plug className="w-6 h-6" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-bold text-lg">Rentec connection test</h3>
+                <p className="text-sm text-muted-foreground">Check the live API and show what it returns</p>
+              </div>
+              <Button variant="outline" onClick={testRentec} disabled={testing}>
+                {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : "Run"}
+              </Button>
+            </div>
+            {diag && (
+              <pre className="mt-3 max-h-96 overflow-auto rounded-lg bg-muted p-3 text-[11px] leading-snug whitespace-pre-wrap break-all">
+                {diag}
+              </pre>
+            )}
+          </CardContent>
+        </Card>
 
         <div className="pt-8">
           <Button variant="destructive" className="w-full h-14 text-lg font-bold" onClick={() => logout()}>

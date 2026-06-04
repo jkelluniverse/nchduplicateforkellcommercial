@@ -81,28 +81,68 @@ interface ListResponse<T> {
   [k: string]: unknown;
 }
 
-/** Single GET with timeout + one 429 backoff retry. Returns parsed JSON or null. */
-async function rcGet<T>(path: string, attempt = 0): Promise<T | null> {
-  const key = apiKey();
-  if (!key) return null;
+// Rentec's exact auth header isn't documented publicly, so we try the common
+// schemes once and remember whichever the account accepts.
+const AUTH_SCHEMES: Array<{ name: string; headers: (k: string) => Record<string, string> }> = [
+  { name: "bearer", headers: (k) => ({ Authorization: `Bearer ${k}` }) },
+  { name: "x-api-key", headers: (k) => ({ "X-API-Key": k }) },
+  { name: "apikey-header", headers: (k) => ({ apikey: k }) },
+  { name: "authorization-raw", headers: (k) => ({ Authorization: k }) },
+];
+let workingScheme = -1;
+
+export function workingAuthScheme(): string | null {
+  return workingScheme >= 0 ? (AUTH_SCHEMES[workingScheme]?.name ?? null) : null;
+}
+
+async function rcFetch(path: string, schemeIdx: number, key: string): Promise<Response> {
   await throttle();
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(`${BASE_URL}${path}`, {
+    return await fetch(`${BASE_URL}${path}`, {
       method: "GET",
-      headers: { "X-API-Key": key, Accept: "application/json" },
+      headers: { ...AUTH_SCHEMES[schemeIdx]!.headers(key), Accept: "application/json" },
       signal: ctl.signal,
     });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Single GET with auth-scheme detection + 429 backoff. Returns parsed JSON or null. */
+async function rcGet<T>(path: string, attempt = 0): Promise<T | null> {
+  const key = apiKey();
+  if (!key) return null;
+  // Once a scheme works, stick with it; otherwise probe all of them.
+  const schemes = workingScheme >= 0 ? [workingScheme] : AUTH_SCHEMES.map((_, i) => i);
+
+  for (const idx of schemes) {
+    let res: Response;
+    try {
+      res = await rcFetch(path, idx, key);
+    } catch (err) {
+      logger.error({ err, path, scheme: AUTH_SCHEMES[idx]!.name }, "Rentec request error");
+      continue;
+    }
     if (res.status === 429 && attempt < 4) {
       const backoff = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s, 8s
       logger.warn({ path, backoff }, "Rentec 429 — backing off");
       await new Promise((r) => setTimeout(r, backoff));
       return rcGet<T>(path, attempt + 1);
     }
+    // Auth rejected — try the next scheme (and forget a previously-cached one).
+    if (res.status === 401 || res.status === 403) {
+      if (workingScheme >= 0) workingScheme = -1;
+      continue;
+    }
     if (!res.ok) {
       logger.warn({ path, status: res.status }, "Rentec request failed");
       return null;
+    }
+    if (workingScheme < 0) {
+      workingScheme = idx;
+      logger.info({ scheme: AUTH_SCHEMES[idx]!.name }, "Rentec auth scheme accepted");
     }
     const ctype = res.headers.get("content-type") ?? "";
     if (!ctype.includes("application/json")) {
@@ -110,19 +150,67 @@ async function rcGet<T>(path: string, attempt = 0): Promise<T | null> {
       return null;
     }
     return (await res.json()) as T;
-  } catch (err) {
-    logger.error({ err, path }, "Rentec request error");
-    return null;
-  } finally {
-    clearTimeout(timer);
   }
+  return null;
 }
 
 function rowsOf<T>(body: ListResponse<T> | null): T[] {
   if (!body) return [];
-  if (Array.isArray(body.data)) return body.data;
-  if (Array.isArray(body.results)) return body.results;
+  if (Array.isArray(body)) return body as unknown as T[];
+  for (const k of ["data", "results", "records", "items", "rows", "properties", "tenants", "leases", "transactions", "payments"]) {
+    const v = (body as Record<string, unknown>)[k];
+    if (Array.isArray(v)) return v as T[];
+  }
   return [];
+}
+
+/**
+ * Live connection probe for the Settings "Test Rentec connection" button.
+ * Tries each auth scheme against /properties and reports raw status + a sample
+ * of the body, then (if one works) the record shape for the key endpoints, so
+ * the field mappings can be corrected to the account's actual JSON.
+ */
+export async function diagnose(): Promise<Record<string, unknown>> {
+  const key = apiKey();
+  const out: Record<string, unknown> = { configured: Boolean(key), base: BASE_URL };
+  if (!key) return out;
+
+  const schemeResults: unknown[] = [];
+  let okScheme = -1;
+  for (let i = 0; i < AUTH_SCHEMES.length; i++) {
+    try {
+      const res = await rcFetch("/properties?limit=1", i, key);
+      const text = await res.text();
+      schemeResults.push({
+        scheme: AUTH_SCHEMES[i]!.name,
+        status: res.status,
+        ok: res.ok,
+        contentType: res.headers.get("content-type"),
+        sample: text.slice(0, 400),
+      });
+      if (res.ok && okScheme < 0) okScheme = i;
+    } catch (err) {
+      schemeResults.push({ scheme: AUTH_SCHEMES[i]!.name, error: String((err as Error)?.message ?? err) });
+    }
+  }
+  out["schemes"] = schemeResults;
+
+  if (okScheme >= 0) {
+    workingScheme = okScheme;
+    out["workingScheme"] = AUTH_SCHEMES[okScheme]!.name;
+    const probes: Record<string, unknown> = {};
+    for (const path of ["/properties", "/tenants", "/leases"]) {
+      const body = await rcGet<ListResponse<RawObj>>(`${path}?limit=1`);
+      const rows = rowsOf<RawObj>(body);
+      probes[path] = {
+        count: rows.length,
+        firstRecordKeys: rows[0] ? Object.keys(rows[0]) : [],
+        firstRecord: rows[0] ?? null,
+      };
+    }
+    out["probes"] = probes;
+  }
+  return out;
 }
 
 /** Paginated list helper (cached). */

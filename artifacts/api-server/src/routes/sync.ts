@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { requireAuth } from "../middlewares/auth";
-import { hasApiKey, ping } from "../services/rentec";
+import { hasApiKey, ping, diagnose } from "../services/rentec";
 import { getLastSyncStatus } from "../lib/directory-sync";
 
 const router: IRouter = Router();
@@ -37,6 +37,16 @@ router.get("/sync-status", requireAuth, async (_req, res): Promise<void> => {
 router.get("/rentec/sync-status", requireAuth, async (_req, res): Promise<void> => {
   const { spec } = await buildPayloads();
   res.json(spec);
+});
+
+/**
+ * Live Rentec connection probe — reports which auth scheme the account accepts
+ * and the raw record shapes, so the integration can be matched to the account's
+ * actual API. Read-only; safe to run anytime.
+ */
+router.get("/rentec/diag", requireAuth, async (_req, res): Promise<void> => {
+  const result = await diagnose();
+  res.json(result);
 });
 
 export default router;
