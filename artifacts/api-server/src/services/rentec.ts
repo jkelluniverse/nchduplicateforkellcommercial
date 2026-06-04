@@ -199,13 +199,40 @@ export async function diagnose(): Promise<Record<string, unknown>> {
     workingScheme = okScheme;
     out["workingScheme"] = AUTH_SCHEMES[okScheme]!.name;
     const probes: Record<string, unknown> = {};
+    let firstPropertyId: string | null = null;
+    let firstRenterId: string | null = null;
     for (const path of ["/properties", "/tenants", "/leases"]) {
       const body = await rcGet<ListResponse<RawObj>>(`${path}?limit=1`);
       const rows = rowsOf<RawObj>(body);
+      if (path === "/properties" && rows[0]) {
+        firstPropertyId = String(pick(rows[0], "property_id", "propertyID", "id") ?? "") || null;
+      }
+      if (path === "/leases" && rows[0]) {
+        firstRenterId = str(pick(rows[0], "renter_id", "renterID")) ?? null;
+      }
       probes[path] = {
         count: rows.length,
         firstRecordKeys: rows[0] ? Object.keys(rows[0]) : [],
         firstRecord: rows[0] ?? null,
+      };
+    }
+    // Probe /transactions too — the per-property ledger (charges, payments,
+    // running balance) depends on these field names, which we can't otherwise
+    // see. Rentec accepts exactly ONE filter id, so try property then renter.
+    const txFilter = firstPropertyId
+      ? `property_id=${encodeURIComponent(firstPropertyId)}`
+      : firstRenterId
+        ? `renter_id=${encodeURIComponent(firstRenterId)}`
+        : null;
+    if (txFilter) {
+      const body = await rcGet<ListResponse<RawObj>>(`/transactions?${txFilter}&limit=3`);
+      const rows = rowsOf<RawObj>(body);
+      probes["/transactions"] = {
+        filter: txFilter,
+        count: rows.length,
+        summary: body?.summary ?? null,
+        firstRecordKeys: rows[0] ? Object.keys(rows[0]) : [],
+        firstRecords: rows.slice(0, 3),
       };
     }
     out["probes"] = probes;
@@ -259,6 +286,7 @@ export interface DLProperty {
     zip?: string;
   };
   class?: string;
+  monthlyRent?: number;
 }
 
 export interface DLUnit {
@@ -284,6 +312,7 @@ export interface DLLease {
   currentBalance?: number;
   overdueBalance?: number;
   lastLateFeesProcessedDate?: string;
+  renterId?: string; // Rentec links a lease to its resident by renter_id.
 }
 
 export interface DLTenantPhone {
@@ -318,14 +347,21 @@ export interface DLTenant {
 type RawObj = Record<string, unknown>;
 
 function pick(o: RawObj, ...keys: string[]): unknown {
-  for (const k of keys) if (o[k] !== undefined && o[k] !== null) return o[k];
+  // Treat empty strings as absent so a later, populated key wins (Rentec often
+  // returns "" for an unused field — e.g. tenant.phone — alongside the real one).
+  for (const k of keys) {
+    const v = o[k];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
   return undefined;
 }
 
 function mapProperty(p: RawObj): DLProperty {
   return {
-    id: String(pick(p, "id", "property_id", "propertyID") ?? ""),
-    name: str(pick(p, "name", "property_name", "shortName")),
+    // Use the numeric property_id — leases/tenants reference THAT, not the
+    // composite "property:NNN" string Rentec returns in the `id` field.
+    id: String(pick(p, "property_id", "propertyID", "id") ?? ""),
+    name: str(pick(p, "nickname", "name", "property_name", "shortName")),
     address: {
       street1: str(pick(p, "address", "street", "address1", "street1")),
       street2: str(pick(p, "address2", "street2")),
@@ -333,7 +369,8 @@ function mapProperty(p: RawObj): DLProperty {
       state: str(pick(p, "state")),
       zip: str(pick(p, "zip", "zipcode", "postal_code")),
     },
-    class: str(pick(p, "type", "class", "property_type")),
+    class: str(pick(p, "ptype", "type", "class", "property_type")),
+    monthlyRent: num(pick(p, "monthly_rent", "rent", "monthlyRent")),
   };
 }
 
@@ -356,16 +393,18 @@ function mapUnit(u: RawObj, parentPropertyId?: string): DLUnit {
 }
 
 function mapTenant(t: RawObj): DLTenant {
-  const first = str(pick(t, "firstName", "first_name", "first"));
-  const last = str(pick(t, "lastName", "last_name", "last"));
+  const first = str(pick(t, "f_name", "firstName", "first_name", "first"));
+  const last = str(pick(t, "l_name", "lastName", "last_name", "last"));
   const full =
     str(pick(t, "fullName", "name", "full_name")) ||
     [first, last].filter(Boolean).join(" ") ||
     undefined;
-  const phone = str(pick(t, "phone", "mobile", "cell", "phone_number"));
+  // mphone is Rentec's mobile field; plain `phone` is often empty.
+  const phone = str(pick(t, "mphone", "phone", "mobile", "cell", "phone_number"));
   const email = str(pick(t, "email", "email_address"));
   return {
-    id: String(pick(t, "id", "tenant_id", "renter_id", "renterID") ?? ""),
+    // Use the numeric renter_id — leases reference THAT, not the "tenant:NNN" id.
+    id: String(pick(t, "renter_id", "tenant_id", "renterID", "id") ?? ""),
     fullName: full,
     firstName: first,
     lastName: last,
@@ -389,14 +428,16 @@ function mapLease(l: RawObj): DLLease {
   const unitId = str(pick(l, "unit_id", "unitID", "unit"));
   const rawStatus = String(pick(l, "status", "lease_status") ?? "active").toLowerCase();
   return {
-    id: String(pick(l, "id", "lease_id", "leaseID") ?? ""),
+    // Use the numeric lease_id, not the composite "lease:NNN" id.
+    id: String(pick(l, "lease_id", "leaseID", "id") ?? ""),
     name: str(pick(l, "name", "tenant_name", "tenants", "title")),
     property: String(pick(l, "property_id", "propertyID", "property") ?? ""),
+    renterId: str(pick(l, "renter_id", "renterID", "tenant_id")),
     units: unitId ? [unitId] : [],
     // Normalize Rentec's status to the "ACTIVE" sentinel the aggregator checks.
     status: rawStatus.startsWith("active") || rawStatus === "current" ? "ACTIVE" : rawStatus.toUpperCase(),
-    start: str(pick(l, "start", "start_date", "lease_start", "move_in")),
-    end: str(pick(l, "end", "end_date", "lease_end", "move_out")),
+    start: str(pick(l, "lease_begin", "start", "start_date", "lease_start", "move_in")),
+    end: str(pick(l, "lease_end", "end", "end_date", "move_out")),
     totalRecurringRent: num(
       pick(l, "rent", "monthly_rent", "rent_amount", "monthlyRent", "lease_rent", "rent_total", "amount"),
     ),
@@ -437,7 +478,7 @@ export async function getUnits(): Promise<DLUnit[]> {
   const raw = await rcList<RawObj>("/properties?include_subunits=true");
   const units: DLUnit[] = [];
   for (const p of raw) {
-    const pid = String(pick(p, "id", "property_id") ?? "");
+    const pid = String(pick(p, "property_id", "propertyID", "id") ?? "");
     const subs = pick(p, "subunits", "sub_units", "units");
     if (Array.isArray(subs)) {
       for (const s of subs) units.push(mapUnit(s as RawObj, pid));
@@ -747,7 +788,9 @@ export async function getRentStatus(
     const address = prop ? formatPropertyAddress(prop) : lease.name ?? lease.id;
 
     let tenantName: string | null = null;
-    const t = selectPrimaryLeaseTenant(lease, tenantByPropertyUnit);
+    // Primary link: Rentec leases carry the resident's renter_id directly.
+    const byRenter = lease.renterId ? tenantById.get(lease.renterId) : undefined;
+    const t = byRenter ?? selectPrimaryLeaseTenant(lease, tenantByPropertyUnit);
     if (t) {
       tenantName = t.fullName ?? ([t.firstName, t.lastName].filter(Boolean).join(" ") || null);
     }
@@ -756,7 +799,6 @@ export async function getRentStatus(
       const direct = tenants.find((x) => x.leaseId && x.leaseId === lease.id);
       tenantName = direct?.fullName ?? lease.name ?? null;
     }
-    void tenantById;
 
     // Monthly rent: prefer the lease's recurring rent; otherwise sum the rent
     // of the unit(s) on the lease so dollar totals reflect real amounts.
@@ -767,6 +809,11 @@ export async function getRentStatus(
         0,
       );
       if (unitRent > 0) monthlyRent = unitRent;
+    }
+    // Rentec leases here carry no recurring-rent field; the property's
+    // monthly_rent is the authoritative figure.
+    if (monthlyRent <= 0 && prop?.monthlyRent && prop.monthlyRent > 0) {
+      monthlyRent = prop.monthlyRent;
     }
 
     const outstanding = lease.outstandingBalance ?? 0; // Rentec lease balance
