@@ -24,8 +24,10 @@ import { getRentStatus as fetchRentecRentStatus, type DLRentRow } from "../servi
 const router: IRouter = Router();
 
 const LATE_FEE_AMOUNT = 75;
-const LATE_FEE_AFTER_DAY = 5; // applied once the calendar day-of-month is > 5 (i.e. starting the 6th)
-const DELINQUENT_DAYS = 30; // 30+ days past 1st of billing month
+// Rent is due on the 1st with a 10-day grace period; late fees begin on the
+// 11th (i.e. once the day-of-month is greater than the 10-day grace window).
+const LATE_FEE_AFTER_DAY = 10;
+const DELINQUENT_DAYS = 30; // 30+ days past 1st of billing month → delinquent
 
 function useRentec(): boolean {
   return Boolean(process.env["RENTEC_API_KEY"]);
@@ -138,17 +140,25 @@ function buildSummaryFromDoorLoopRows(
     + buckets.paid.reduce((a, r) => a + r.lateFeePaid, 0)
     + buckets.partial.reduce((a, r) => a + r.lateFeePaid, 0);
   const partialCollected = buckets.partial.reduce((a, r) => a + r.amountPaid, 0);
-  const unpaidOutstanding = buckets.unpaid.reduce((a, r) => a + r.monthlyRent, 0);
+  // Unpaid rows may carry a partial payment — the still-owed amount for the
+  // current month is rent minus whatever has come in so far.
+  const unpaidOutstanding = buckets.unpaid.reduce(
+    (a, r) => a + Math.max(0, r.monthlyRent - r.amountPaid),
+    0,
+  );
   const unpaidLateFees = buckets.unpaid.reduce((a, r) => a + r.lateFeeDue, 0);
   const delinquentOutstanding = buckets.delinquent.reduce(
-    (a, r) => a + r.monthlyRent + r.lateFeeDue,
+    (a, r) => a + Math.max(0, r.monthlyRent - r.amountPaid) + r.lateFeeDue,
     0,
   );
   const avgDaysOverdue = buckets.delinquent.length
     ? Math.round(buckets.delinquent.reduce((a, r) => a + r.daysOverdue, 0) / buckets.delinquent.length)
     : 0;
 
-  const totalCollectedMtd = paidCollected + lateCollected + lateFeesCollected + partialCollected;
+  // Count every dollar received toward this month's rent (including partial
+  // payments on still-unpaid rows) plus any late fees collected.
+  const rentCollected = rows.reduce((a, r) => a + r.amountPaid, 0);
+  const totalCollectedMtd = rentCollected + lateFeesCollected;
   const collectionRate = sumMonthlyRent > 0
     ? Math.round((totalCollectedMtd / sumMonthlyRent) * 1000) / 10
     : 0;
@@ -236,7 +246,7 @@ export async function ensureMonthRows(month: number, year: number): Promise<void
 
 /**
  * Recalculate derived fields for the given month/year:
- *   - Apply $75 late_fee_due to any unpaid row after the 5th of the billing month.
+ *   - Apply $75 late_fee_due to any unpaid row on/after the 11th of the billing month.
  *   - Mark unpaid rows as 'delinquent' once 30+ days past the 1st of the billing month.
  *   - Refresh days_overdue on every unpaid/delinquent row.
  * Paid/late/partial rows are left alone (their amounts are authoritative).
@@ -260,13 +270,13 @@ async function recalcMonth(month: number, year: number): Promise<void> {
       ),
     );
 
-  // 1) Apply $75 late fee to any unpaid row once we are past the 5th of the
-  //    billing month (i.e. on the 6th or later of that same calendar month).
-  //    For prior months we are always past the 5th by definition.
+  // 1) Apply $75 late fee to any unpaid row once we are past the 10-day grace
+  //    period (i.e. on the 11th or later of that same calendar month).
+  //    For prior months we are always past the grace period by definition.
   const now = new Date();
   const isCurrentMonth = now.getMonth() + 1 === month && now.getFullYear() === year;
-  const pastTheFifth = isCurrentMonth ? now.getDate() > LATE_FEE_AFTER_DAY : true;
-  if (pastTheFifth) {
+  const pastGrace = isCurrentMonth ? now.getDate() > LATE_FEE_AFTER_DAY : true;
+  if (pastGrace) {
     await db
       .update(rentStatusTable)
       .set({ lateFeeDue: String(LATE_FEE_AMOUNT) })

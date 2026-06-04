@@ -309,7 +309,9 @@ function mapLease(l: RawObj): DLLease {
     status: rawStatus.startsWith("active") || rawStatus === "current" ? "ACTIVE" : rawStatus.toUpperCase(),
     start: str(pick(l, "start", "start_date", "lease_start", "move_in")),
     end: str(pick(l, "end", "end_date", "lease_end", "move_out")),
-    totalRecurringRent: num(pick(l, "rent", "monthly_rent", "rent_amount", "amount")),
+    totalRecurringRent: num(
+      pick(l, "rent", "monthly_rent", "rent_amount", "monthlyRent", "lease_rent", "rent_total", "amount"),
+    ),
     // Rentec's lease balance IS the authoritative amount owed.
     outstandingBalance: balance,
     currentBalance: balance,
@@ -522,7 +524,13 @@ export interface DLRentStatus {
   fetchedAt: string;
 }
 
-const DELINQUENT_DAYS = 30;
+// Kell Commercial rent cycle: rent is due on the 1st, there is a 10-day grace
+// period (through the 10th), late fees begin on the 11th, and any balance left
+// unpaid for 30+ days is treated as delinquent (3-day / 10-day notice eligible).
+const GRACE_DAYS = 10; // grace period after the 1st; late fees start the day after
+const LATE_FEE_DAY = 11; // late fees post on the 11th of the month
+const LATE_FEE_AMOUNT = 75; // flat late fee once past the grace period
+const DELINQUENT_DAYS = 30; // 30+ days past due → delinquent
 
 function round2(x: number): number {
   return Math.round(x * 100) / 100;
@@ -552,17 +560,28 @@ export async function getRentStatus(
   if (leases.length === 0 && properties.length === 0) return null;
 
   const propById = new Map(properties.map((p) => [p.id, p]));
-  void units;
+  // Per-unit rent, used as a fallback when the lease record itself carries no
+  // recurring-rent figure (so the dashboard's dollar totals aren't all $0).
+  const rentByUnitId = new Map<string, number>();
+  for (const u of units) {
+    if (u.marketRent && u.marketRent > 0) rentByUnitId.set(u.id, u.marketRent);
+  }
   const tenantByPropertyUnit = buildLeaseTenantLookup(tenants);
   const tenantById = new Map(tenants.map((t) => [t.id, t]));
 
   const now = new Date();
   const isCurrentMonth = now.getMonth() + 1 === month && now.getFullYear() === year;
   const billingStart = new Date(year, month - 1, 1);
+  // For the current month, age from today; for a past month, age from its 1st.
+  const asOf = isCurrentMonth ? Date.now() : new Date(year, month, 1).getTime();
+  const dayOfMonth = isCurrentMonth ? now.getDate() : 31;
   const daysSinceFirst = Math.max(
     0,
-    Math.floor((Date.now() - billingStart.getTime()) / (24 * 60 * 60 * 1000)),
+    Math.floor((asOf - billingStart.getTime()) / (24 * 60 * 60 * 1000)),
   );
+  // Late fees only apply once we are on/after the 11th of the billing month.
+  const pastGrace = dayOfMonth > GRACE_DAYS;
+  void LATE_FEE_DAY;
 
   const rows: DLRentRow[] = [];
   const uniqueProps = new Set<string>();
@@ -586,9 +605,18 @@ export async function getRentStatus(
     }
     void tenantById;
 
-    const monthlyRent = lease.totalRecurringRent ?? 0;
+    // Monthly rent: prefer the lease's recurring rent; otherwise sum the rent
+    // of the unit(s) on the lease so dollar totals reflect real amounts.
+    let monthlyRent = lease.totalRecurringRent ?? 0;
+    if (monthlyRent <= 0) {
+      const unitRent = (lease.units ?? []).reduce(
+        (sum, uid) => sum + (rentByUnitId.get(uid) ?? 0),
+        0,
+      );
+      if (unitRent > 0) monthlyRent = unitRent;
+    }
+
     const outstanding = lease.outstandingBalance ?? 0; // Rentec lease balance
-    const overdue = lease.overdueBalance ?? 0;
     const owesNothing = outstanding <= 0;
 
     const startMatch = lease.start?.match(/^(\d{4})-(\d{2})/);
@@ -600,36 +628,49 @@ export async function getRentStatus(
         })()
       : false;
 
+    // How many billing cycles is the balance behind? Used to age the debt so a
+    // single missed month is "unpaid" but anything 30+ days old is delinquent.
+    const monthsBehind =
+      monthlyRent > 0 ? Math.max(1, Math.round(outstanding / monthlyRent)) : 1;
+    const oldestUnpaid = new Date(year, month - 1 - (monthsBehind - 1), 1);
+    const ageDays = owesNothing
+      ? 0
+      : Math.max(
+          daysSinceFirst,
+          Math.floor((asOf - oldestUnpaid.getTime()) / (24 * 60 * 60 * 1000)),
+        );
+
     let status: DLRentRow["status"];
     let daysOverdue = 0;
 
-    if (startedThisMonthOrLater) {
-      status = "unpaid";
-      daysOverdue = 0;
-    } else if (owesNothing) {
-      // Rentec says nothing is owed (incl. prepaid/credit) — current.
+    if (owesNothing) {
+      // Rentec says nothing is owed for this lease (paid, prepaid, or credit).
       status = "paid";
       daysOverdue = 0;
-    } else if (!isCurrentMonth) {
-      status = "delinquent";
-      daysOverdue = DELINQUENT_DAYS;
-    } else if (overdue > 0) {
-      // Age the past-due balance from the oldest unpaid cycle.
-      const monthsOverdue = monthlyRent > 0 ? Math.max(1, Math.round(overdue / monthlyRent)) : 1;
-      const missedSince = new Date(year, month - 1 - (monthsOverdue - 1), 1);
-      daysOverdue = Math.max(
-        0,
-        Math.floor((Date.now() - missedSince.getTime()) / (24 * 60 * 60 * 1000)),
-      );
-      status = daysOverdue >= DELINQUENT_DAYS ? "delinquent" : "unpaid";
-    } else {
+    } else if (startedThisMonthOrLater) {
+      // Brand-new lease that owes its first month — unpaid, not yet aged.
       status = "unpaid";
       daysOverdue = daysSinceFirst;
+    } else if (ageDays >= DELINQUENT_DAYS) {
+      status = "delinquent";
+      daysOverdue = ageDays;
+    } else {
+      // Owes this month but still inside the 30-day window (incl. grace period).
+      status = "unpaid";
+      daysOverdue = ageDays;
     }
 
-    // amountPaid this month = max(0, monthlyRent - outstanding) is misleading
-    // when back-balances exist; report 0 when owing and rent when current.
-    const amountPaid = owesNothing ? monthlyRent : Math.max(0, monthlyRent - outstanding);
+    // What's been paid toward THIS month's rent (so the bar tracks the current
+    // cycle and "resets" each month): full rent when current, otherwise rent
+    // minus the portion of the balance attributable to this month.
+    const thisMonthOwed = Math.min(outstanding, monthlyRent);
+    const amountPaid =
+      monthlyRent > 0 ? Math.max(0, monthlyRent - thisMonthOwed) : 0;
+
+    // Late fee accrues only once past the 10-day grace period (the 11th onward)
+    // and only while the current month's rent is still owed.
+    const lateFeeDue =
+      pastGrace && status !== "paid" && thisMonthOwed > 0 ? LATE_FEE_AMOUNT : 0;
 
     rows.push({
       leaseId: lease.id,
@@ -638,7 +679,7 @@ export async function getRentStatus(
       tenantName,
       monthlyRent,
       amountPaid: round2(amountPaid),
-      lateFeeDue: 0,
+      lateFeeDue,
       lateFeePaid: 0,
       paymentDate: null,
       status,

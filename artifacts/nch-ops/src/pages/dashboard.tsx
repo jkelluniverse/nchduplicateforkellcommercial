@@ -112,13 +112,20 @@ export default function Dashboard() {
 
   return (
     <div className="pb-8">
-      {/* Header */}
-      <div className="bg-primary text-primary-foreground pt-12 pb-6 px-4 rounded-b-3xl shadow-md">
-        <h1 className="text-3xl font-bold tracking-tight">Kell Commercial</h1>
-        <p className="text-primary-foreground/80 mt-1 font-medium">{format(new Date(), "EEEE, MMMM do")}</p>
+      {/* Brand header — logo on a clean cream bar with a red→gold rule */}
+      <div className="bg-cream px-4 pt-10 pb-4 rounded-b-3xl shadow-sm border-b border-border">
+        <img
+          src={`${import.meta.env.BASE_URL}assets/kellcommercial-logo.svg`}
+          alt="Kell Commercial Leasing"
+          className="h-14 w-auto"
+        />
+        <div className="mt-3 h-1 w-full rounded-full bg-gradient-to-r from-primary via-gold to-transparent" />
+        <p className="text-sm text-muted-foreground mt-2 font-medium">
+          {format(new Date(), "EEEE, MMMM do")}
+        </p>
 
         {/* Past-due headline */}
-        <div className="mt-6 bg-white/10 border border-white/10 backdrop-blur-sm rounded-2xl p-4">
+        <div className="mt-4 bg-primary text-primary-foreground rounded-2xl p-4 shadow-md">
           <div className="flex items-center gap-2 text-primary-foreground/80 text-sm font-medium">
             <DollarSign className="w-4 h-4" /> Past due
           </div>
@@ -131,7 +138,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="p-4 space-y-6 -mt-2">
+      <div className="p-4 space-y-6">
         {/* Rentec connection + manual Refresh */}
         <RentecStatusBar />
 

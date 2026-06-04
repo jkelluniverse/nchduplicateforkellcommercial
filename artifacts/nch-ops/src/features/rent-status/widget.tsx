@@ -70,7 +70,7 @@ export function RentStatusWidget() {
 
   return (
     <>
-      <Card className="border-0 shadow-sm overflow-hidden">
+      <Card className="border border-border border-t-4 border-t-gold shadow-sm overflow-hidden">
         <CardContent className="p-4 space-y-4">
           {/* Header */}
           <div>

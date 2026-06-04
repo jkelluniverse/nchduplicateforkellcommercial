@@ -45,6 +45,11 @@
   --color-chart-4: hsl(var(--chart-4));
   --color-chart-5: hsl(var(--chart-5));
 
+  /* Kell brand accents — cream surface + gold highlight (distinct from NCH) */
+  --color-gold: hsl(var(--gold));
+  --color-gold-foreground: hsl(var(--gold-foreground));
+  --color-cream: hsl(var(--cream));
+
   --color-sidebar: hsl(var(--sidebar));
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-border: hsl(var(--sidebar-border));
@@ -78,42 +83,48 @@
   --elevate-1: rgba(0,0,0, .03);
   --elevate-2: rgba(0,0,0, .08);
 
-  --background: 0 0% 100%;
-  --foreground: 0 0% 10%;
+  /* Warm cream surfaces set Kell apart from the NCH app's plain white. */
+  --background: 40 33% 97%;
+  --foreground: 24 10% 12%;
 
-  --border: 0 0% 88%;
+  --border: 40 16% 86%;
 
-  --card: 0 0% 97%;
-  --card-foreground: 0 0% 10%;
-  --card-border: 0 0% 88%;
+  --card: 40 30% 99%;
+  --card-foreground: 24 10% 12%;
+  --card-border: 40 16% 86%;
 
-  --sidebar: 0 0% 97%;
-  --sidebar-foreground: 0 0% 10%;
-  --sidebar-border: 0 0% 88%;
+  --sidebar: 40 30% 98%;
+  --sidebar-foreground: 24 10% 12%;
+  --sidebar-border: 40 16% 86%;
   --sidebar-primary: 6 59% 44%;
   --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 0 0% 95%;
-  --sidebar-accent-foreground: 0 0% 10%;
+  --sidebar-accent: 42 40% 92%;
+  --sidebar-accent-foreground: 24 10% 12%;
   --sidebar-ring: 6 59% 44%;
 
-  --popover: 0 0% 100%;
-  --popover-foreground: 0 0% 10%;
-  --popover-border: 0 0% 88%;
+  --popover: 40 30% 99%;
+  --popover-foreground: 24 10% 12%;
+  --popover-border: 40 16% 86%;
 
   --primary: 6 59% 44%;
   --primary-foreground: 0 0% 100%;
 
-  --secondary: 0 0% 95%;
-  --secondary-foreground: 0 0% 10%;
+  --secondary: 42 30% 93%;
+  --secondary-foreground: 24 10% 12%;
 
-  --muted: 0 0% 95%;
-  --muted-foreground: 0 0% 33%;
+  --muted: 40 22% 93%;
+  --muted-foreground: 30 6% 38%;
 
-  --accent: 0 0% 95%;
-  --accent-foreground: 0 0% 10%;
+  --accent: 42 45% 90%;
+  --accent-foreground: 28 35% 22%;
 
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 100%;
+
+  /* Brand gold + cream accents */
+  --gold: 38 45% 58%;
+  --gold-foreground: 28 40% 18%;
+  --cream: 40 33% 96%;
 
   --input: 0 0% 88%;
   --ring: 6 59% 44%;
@@ -210,11 +221,16 @@
   --muted: 0 0% 20%;
   --muted-foreground: 0 0% 60%;
 
-  --accent: 0 0% 20%;
+  --accent: 38 25% 24%;
   --accent-foreground: 0 0% 97%;
 
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 100%;
+
+  /* Brand gold + cream accents (dark) */
+  --gold: 38 50% 58%;
+  --gold-foreground: 28 40% 12%;
+  --cream: 30 8% 16%;
 
   /* Used as the border around inputs. Dark mode: Should be a border that is light enough to have high contrast when rendered on a --card background. More contrast than standard --border */
   --input: 0 0% 30%;
