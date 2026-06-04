@@ -390,6 +390,71 @@ export async function getTransactionsForTenant(renterId: string): Promise<RawObj
   return rcList<RawObj>(`/transactions?renter_id=${encodeURIComponent(renterId)}`);
 }
 
+function streetKey(addr: string): string {
+  return (addr.split(",")[0] ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Resolve a local address to its Rentec property id by street match. */
+export async function findRentecPropertyIdByAddress(address: string): Promise<string | null> {
+  const target = streetKey(address);
+  if (!target) return null;
+  const props = await getProperties();
+  for (const p of props) {
+    const s = streetKey(formatPropertyAddress(p));
+    if (s && (s === target || s.includes(target) || target.includes(s))) return p.id;
+  }
+  return null;
+}
+
+export interface RentecLedgerLine {
+  date: string;
+  description: string;
+  subDescription: string | null;
+  reference: string | null;
+  debit: number | null;
+  credit: number | null;
+}
+
+/**
+ * Normalized ledger lines for one property's Rentec transactions, mapped to the
+ * statement layout (date · description · check# · debit · credit). Field names
+ * vary by account, so every lookup is defensive. Running balance is computed by
+ * the caller. Returns [] when there are no transactions.
+ */
+export async function getPropertyLedgerLines(propertyId: string): Promise<RentecLedgerLine[]> {
+  const txns = await getTransactionsForProperty(propertyId);
+  const lines: RentecLedgerLine[] = [];
+  for (const tx of txns) {
+    const o = tx as RawObj;
+    const date = str(pick(o, "date", "transaction_date", "post_date", "entry_date", "created")) ?? "";
+    const typeStr = String(pick(o, "type", "transaction_type", "category", "entry_type") ?? "").toLowerCase();
+    const account = str(pick(o, "account", "account_name", "gl_account", "category_name", "gl"));
+    const memo = str(pick(o, "description", "memo", "comment", "note", "details"));
+    const amount = num(pick(o, "amount", "total", "value", "amount_total"));
+    let debit = num(pick(o, "debit", "charge", "charge_amount"));
+    let credit = num(pick(o, "credit", "payment", "amount_received", "paid", "payment_amount"));
+    if (debit === 0 && credit === 0 && amount !== 0) {
+      const isPayment = /payment|credit|receipt|deposit|paid/.test(typeStr);
+      const isCharge = /charge|invoice|fee|rent|bill|debit/.test(typeStr);
+      if (isPayment) credit = Math.abs(amount);
+      else if (isCharge) debit = Math.abs(amount);
+      else if (amount < 0) debit = Math.abs(amount);
+      else credit = amount;
+    }
+    if (debit === 0 && credit === 0) continue;
+    const desc = memo || account || (typeStr ? typeStr.replace(/\b\w/g, (m) => m.toUpperCase()) : "Transaction");
+    lines.push({
+      date,
+      description: desc,
+      subDescription: memo && account ? account : null,
+      reference: str(pick(o, "check", "check_number", "reference", "ref")) ?? null,
+      debit: debit || null,
+      credit: credit || null,
+    });
+  }
+  return lines;
+}
+
 /** Running ledger balance = last page's summary.ending_balance for a property. */
 export async function getEndingBalanceForProperty(propertyId: string): Promise<number | null> {
   let lastSummary: ListResponse<RawObj>["summary"] | undefined;

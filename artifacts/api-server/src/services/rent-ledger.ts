@@ -180,3 +180,69 @@ export async function getLedgerRentStatus(
 export function clearLedgerCache(): void {
   cache = null;
 }
+
+// ─── Per-property history (for the property statement fallback) ──────
+
+export interface LedgerMonth {
+  month: number;
+  rent: number;
+  paid: number;
+  date: string; // raw "m/d" cell, if present
+}
+
+export interface LedgerHistory {
+  rent: number;
+  tenant: string | null;
+  months: LedgerMonth[];
+}
+
+function streetKey(addr: string): string {
+  return (addr.split(",")[0] ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Pull one property's full monthly history (rent + paid + date per month) from
+ * the DAILY TRACKER, used to build a statement when Rentec is unavailable.
+ */
+export async function getTrackerHistoryForAddress(address: string): Promise<LedgerHistory | null> {
+  if (!hasLedger()) return null;
+  const target = streetKey(address);
+  if (!target) return null;
+  const tracker = await readTracker();
+  if (!tracker) return null;
+
+  for (let i = 0; i < tracker.values.length; i++) {
+    if (tracker.vacant.has(i)) continue;
+    const raw = tracker.values[i];
+    if (!Array.isArray(raw)) continue;
+    const addr = String(raw[1] ?? "").trim();
+    if (!addr) continue;
+    const s = streetKey(addr);
+    if (!(s === target || s.includes(target) || target.includes(s))) continue;
+    const rent = moneyVal(raw[3]);
+    if (rent <= 0) continue;
+
+    const tenant = String(raw[2] ?? "").trim() || null;
+    const months: LedgerMonth[] = [];
+    for (let m = 1; m <= 12; m++) {
+      const paidCol = 4 + (m - 1) * 2;
+      months.push({
+        month: m,
+        rent,
+        paid: moneyVal(raw[paidCol]),
+        date: String(raw[paidCol + 1] ?? "").trim(),
+      });
+    }
+    return { rent, tenant, months };
+  }
+  return null;
+}
+
+function moneyVal(v: unknown): number {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  if (typeof v === "string") {
+    const n = Number(v.replace(/[$,\s]/g, ""));
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
