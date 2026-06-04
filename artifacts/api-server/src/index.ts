@@ -5,6 +5,7 @@ import { initSocket } from "./lib/socket";
 import { ensureMonthRows } from "./routes/rent-status";
 import { runDailyReminders } from "./routes/tenant-notes";
 import { syncDirectory } from "./lib/directory-sync";
+import { seedDirectoryFromContacts } from "./lib/directory-seed";
 import { db, usersTable, pool } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
@@ -172,8 +173,15 @@ server.listen(port, () => {
     setInterval(() => { void runDailyReminders(); }, 24 * 60 * 60 * 1000);
   }, msUntilNext8AM());
 
-  // Rentec directory sync on startup, then every 30 minutes.
+  // Populate the directory from the curated contact seed (idempotent,
+  // non-destructive), then run the Rentec directory sync on startup and every
+  // 30 minutes.
   void (async () => {
+    try {
+      await seedDirectoryFromContacts();
+    } catch (err) {
+      logger.error({ err }, "Directory contacts seed failed");
+    }
     try {
       await syncDirectory();
     } catch (err) {

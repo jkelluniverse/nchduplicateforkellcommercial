@@ -1,5 +1,5 @@
 import { db, propertiesTable, rentStatusTable } from "@workspace/db";
-import { eq, notInArray, isNull } from "drizzle-orm";
+import { eq, notInArray, isNull, and, notLike } from "drizzle-orm";
 import { logger } from "./logger";
 import {
   getProperties,
@@ -211,13 +211,20 @@ export async function syncDirectory(): Promise<SyncResult> {
       }
     }
 
-    // Remove properties with no matching active DoorLoop lease
+    // Remove properties with no matching active DoorLoop lease — but never
+    // touch curated `seed:` rows from the contact sheet (Rentec only manages
+    // its own rows).
     let removed = 0;
     if (syncedPropertyIds.length > 0) {
       const staleRows = await db
         .select({ id: propertiesTable.id })
         .from(propertiesTable)
-        .where(notInArray(propertiesTable.doorloopPropertyId, syncedPropertyIds));
+        .where(
+          and(
+            notInArray(propertiesTable.doorloopPropertyId, syncedPropertyIds),
+            notLike(propertiesTable.doorloopPropertyId, "seed:%"),
+          )!,
+        );
       for (const row of staleRows) {
         await db.delete(rentStatusTable).where(eq(rentStatusTable.propertyId, row.id));
         await db.delete(propertiesTable).where(eq(propertiesTable.id, row.id));
