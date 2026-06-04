@@ -10,9 +10,7 @@
  */
 import type { DLRentStatus, DLRentRow } from "./rentec";
 
-// Rent-cycle rules shared across the app: due on the 1st, 10-day grace, late
-// fee on the 11th, delinquent once a balance is 30+ days old.
-const GRACE_DAYS = 10;
+// A missed month is treated as 30+ days delinquent; a flat late fee applies.
 const LATE_FEE_AMOUNT = 75;
 const DELINQUENT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -32,20 +30,39 @@ function round2(x: number): number {
 
 export type Portfolio = "dad" | "jacob" | "all";
 
-/** Turn raw DAILY TRACKER rows into a rent-status snapshot for one month. */
+export interface ParseOptions {
+  asOf?: number;
+  portfolio?: Portfolio;
+  /** Absolute row indices (into `values`) flagged vacant via red highlight. */
+  vacant?: Set<number>;
+}
+
+/**
+ * Turn raw DAILY TRACKER rows into a rent-status snapshot for one month.
+ *
+ * Status rules reflect how the portfolio actually pays (per Jacob):
+ *  - Each month's column already holds that month's payment regardless of the
+ *    date it was made (pre-payments before the 1st included), so we attribute
+ *    by column, never by calendar date.
+ *  - Tenants have varying due days (e.g. Tom Reed pays the 15th), so an unpaid
+ *    current month early in the cycle is NOT "late". We judge standing by
+ *    whether a payment was recorded LAST month: if it was, the tenant is
+ *    current; delinquent only when the prior month has no payment at all.
+ *  - Vacant units (highlighted red in the sheet) are excluded entirely — their
+ *    rent does not count toward expected collections.
+ */
 export function parseTrackerRows(
   values: unknown[][],
   month: number,
   year: number,
-  asOf: number = Date.now(),
-  portfolio: Portfolio = "all",
+  opts: ParseOptions = {},
 ): DLRentStatus {
+  const { asOf = Date.now(), portfolio = "all", vacant } = opts;
   const paidCol = 4 + (month - 1) * 2; // this month's "Paid $" column
   const priorPaidCol = paidCol - 2; // previous month's "Paid $" column
   const billingFirst = new Date(year, month - 1, 1).getTime();
   const priorFirst = new Date(year, month - 2, 1).getTime();
   const daysSinceFirst = Math.max(0, Math.floor((asOf - billingFirst) / DAY_MS));
-  const pastGrace = daysSinceFirst > GRACE_DAYS;
 
   const rows: DLRentRow[] = [];
   const properties = new Set<string>();
@@ -53,7 +70,8 @@ export function parseTrackerRows(
   // section banners; track which we're in so we can include only one.
   let section: "dad" | "jacob" = "dad";
 
-  for (const raw of values) {
+  for (let rowIndex = 0; rowIndex < values.length; rowIndex++) {
+    const raw = values[rowIndex];
     if (!Array.isArray(raw)) continue;
 
     // Section banners (label sits in col A; the rest of the row is empty).
@@ -70,29 +88,37 @@ export function parseTrackerRows(
     // Skip section banners / totals / header rows.
     if (/portfolio|^\s*totals?\s*$|property address/i.test(address)) continue;
     if (/^\s*totals?\s*$|portfolio/i.test(tenant)) continue;
+    // Vacant units (red in the sheet) don't count toward expected collections.
+    if (vacant?.has(rowIndex)) continue;
 
     const paid = Math.max(0, money(raw[paidCol]));
+    // "Was a payment made last month?" — the signal for whether a tenant is
+    // current. For January (no prior column in this sheet) assume current.
     const priorPaid = priorPaidCol >= 4 ? money(raw[priorPaidCol]) : rent;
-    const priorCovered = priorPaid >= rent;
+    const priorPaymentMade = priorPaid > 0;
     const appliedPaid = Math.min(paid, rent); // credit/overpay doesn't mask others
 
     let status: DLRentRow["status"];
     let daysOverdue = 0;
+    let lateFeeDue = 0;
     if (paid >= rent) {
+      // Covers this month (including pre-payments logged before the 1st).
       status = "paid";
-    } else if (!priorCovered) {
-      // Carrying an unpaid balance from a prior month → 30+ days old.
+    } else if (!priorPaymentMade) {
+      // No payment last month either → genuinely behind (30+ days).
       status = "delinquent";
       daysOverdue = Math.max(DELINQUENT_DAYS, Math.floor((asOf - priorFirst) / DAY_MS));
+      lateFeeDue = LATE_FEE_AMOUNT;
     } else if (paid > 0) {
+      // Part of this month is in; tenant is paying and was current last month.
       status = "partial";
       daysOverdue = daysSinceFirst;
     } else {
+      // Nothing yet this month, but current last month — due date may simply
+      // not have arrived (varies per tenant). Outstanding, but not late.
       status = "unpaid";
       daysOverdue = daysSinceFirst;
     }
-
-    const lateFeeDue = status !== "paid" && pastGrace ? LATE_FEE_AMOUNT : 0;
 
     rows.push({
       leaseId: `${address}::${tenant}`,

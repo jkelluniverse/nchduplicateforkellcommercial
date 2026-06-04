@@ -113,11 +113,11 @@ export default function Dashboard() {
   return (
     <div className="pb-8">
       {/* Brand header — centered logo on a clean cream bar with a red→gold rule */}
-      <div className="bg-cream px-4 pt-10 pb-4 rounded-b-3xl shadow-sm border-b border-border">
+      <div className="bg-cream px-4 pt-6 pb-3 rounded-b-3xl shadow-sm border-b border-border">
         <img
           src={`${import.meta.env.BASE_URL}assets/kellcommercial-logo.svg`}
           alt="Kell Commercial Leasing"
-          className="h-16 w-auto mx-auto block"
+          className="w-64 max-w-[80%] h-auto mx-auto block"
         />
         <div className="mt-3 h-1 w-full rounded-full bg-gradient-to-r from-transparent via-gold to-transparent" />
         <p className="text-sm text-muted-foreground mt-2 font-medium text-center">

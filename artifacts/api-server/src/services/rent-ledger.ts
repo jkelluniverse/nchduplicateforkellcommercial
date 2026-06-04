@@ -69,7 +69,30 @@ export function hasLedger(): boolean {
 
 let cache: { value: DLRentStatus; key: string; expiresAt: number } | null = null;
 
-async function readTrackerValues(): Promise<unknown[][] | null> {
+interface SheetColor {
+  red?: number | null;
+  green?: number | null;
+  blue?: number | null;
+}
+
+/**
+ * A red-ish fill marks a vacant unit. We require red to clearly dominate green
+ * and blue so the cream/gold theme and green "paid" cells never register.
+ */
+function isVacantRed(color: SheetColor | null | undefined): boolean {
+  if (!color) return false;
+  const r = color.red ?? 0;
+  const g = color.green ?? 0;
+  const b = color.blue ?? 0;
+  return r >= 0.55 && r - g >= 0.2 && r - b >= 0.2;
+}
+
+interface TrackerData {
+  values: unknown[][];
+  vacant: Set<number>;
+}
+
+async function readTracker(): Promise<TrackerData | null> {
   const credentials = buildCredentials();
   if (!credentials) return null;
   try {
@@ -85,16 +108,44 @@ async function readTrackerValues(): Promise<unknown[][] | null> {
     const titles = (meta.data.sheets ?? [])
       .map((s) => s.properties?.title)
       .filter((t): t is string => Boolean(t));
-    const tab =
-      titles.find((t) => /daily\s*tracker/i.test(t)) ?? titles[0];
+    const tab = titles.find((t) => /daily\s*tracker/i.test(t)) ?? titles[0];
     if (!tab) return null;
 
-    const res = await sheets.spreadsheets.values.get({
+    // One grid read gives us both the values and per-cell fill colors so we
+    // can detect red-highlighted (vacant) rows.
+    const res = await sheets.spreadsheets.get({
       spreadsheetId: id,
-      range: `'${tab}'!A1:AB400`,
-      valueRenderOption: "UNFORMATTED_VALUE",
+      ranges: [`'${tab}'!A1:AB400`],
+      includeGridData: true,
+      fields: "sheets(data(rowData(values(effectiveValue,formattedValue,effectiveFormat(backgroundColor)))))",
     });
-    return (res.data.values as unknown[][]) ?? null;
+
+    const rowData = res.data.sheets?.[0]?.data?.[0]?.rowData ?? [];
+    const values: unknown[][] = [];
+    const vacant = new Set<number>();
+
+    rowData.forEach((row, rowIndex) => {
+      const cells = row.values ?? [];
+      const out: unknown[] = [];
+      let rowIsVacant = false;
+      cells.forEach((cell, colIndex) => {
+        const ev = cell.effectiveValue;
+        out[colIndex] =
+          ev?.numberValue ?? ev?.stringValue ?? ev?.boolValue ?? cell.formattedValue ?? "";
+        // Only the identity columns (address/tenant/rent) carry the vacancy mark.
+        if (colIndex >= 1 && colIndex <= 3 && isVacantRed(cell.effectiveFormat?.backgroundColor)) {
+          rowIsVacant = true;
+        }
+      });
+      values[rowIndex] = out;
+      if (rowIsVacant) vacant.add(rowIndex);
+    });
+
+    if (vacant.size > 0) {
+      const addrs = [...vacant].map((i) => String(values[i]?.[1] ?? "?"));
+      logger.info({ count: vacant.size, addresses: addrs }, "Rent ledger: excluded vacant (red) units");
+    }
+    return { values, vacant };
   } catch (err) {
     logger.error({ err }, "Rent ledger: failed to read Google Sheet");
     return null;
@@ -113,10 +164,13 @@ export async function getLedgerRentStatus(
   const key = `${year}-${month}`;
   if (cache && cache.key === key && cache.expiresAt > Date.now()) return cache.value;
 
-  const values = await readTrackerValues();
-  if (!values || values.length === 0) return null;
+  const tracker = await readTracker();
+  if (!tracker || tracker.values.length === 0) return null;
 
-  const snapshot = parseTrackerRows(values, month, year, Date.now(), portfolio());
+  const snapshot = parseTrackerRows(tracker.values, month, year, {
+    portfolio: portfolio(),
+    vacant: tracker.vacant,
+  });
   if (snapshot.rows.length === 0) return null;
 
   cache = { value: snapshot, key, expiresAt: Date.now() + CACHE_TTL_MS };
