@@ -17,7 +17,7 @@
 import { google } from "googleapis";
 import { logger } from "../lib/logger";
 import type { DLRentStatus } from "./rentec";
-import { parseTrackerRows } from "./rent-ledger-parse";
+import { parseTrackerRows, type Portfolio } from "./rent-ledger-parse";
 
 // The shared "MASTER RENT LEDGER V.4". Overridable per-environment.
 const DEFAULT_SHEET_ID = "1s6G-hFBy20812QyIG28bXAknC9CpwDl1eawKWEwoSbU";
@@ -25,6 +25,12 @@ const CACHE_TTL_MS = 2 * 60 * 1000;
 
 function sheetId(): string {
   return process.env["RENT_LEDGER_SHEET_ID"] || DEFAULT_SHEET_ID;
+}
+
+/** Which tracker section(s) to count. Defaults to Dad's portfolio. */
+function portfolio(): Portfolio {
+  const p = (process.env["RENT_LEDGER_PORTFOLIO"] || "dad").toLowerCase();
+  return p === "all" || p === "jacob" ? (p as Portfolio) : "dad";
 }
 
 /** Service-account creds: prefer the full JSON blob, fall back to the split env. */
@@ -110,7 +116,7 @@ export async function getLedgerRentStatus(
   const values = await readTrackerValues();
   if (!values || values.length === 0) return null;
 
-  const snapshot = parseTrackerRows(values, month, year);
+  const snapshot = parseTrackerRows(values, month, year, Date.now(), portfolio());
   if (snapshot.rows.length === 0) return null;
 
   cache = { value: snapshot, key, expiresAt: Date.now() + CACHE_TTL_MS };

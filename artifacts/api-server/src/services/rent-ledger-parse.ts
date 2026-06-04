@@ -30,12 +30,15 @@ function round2(x: number): number {
   return Math.round(x * 100) / 100;
 }
 
+export type Portfolio = "dad" | "jacob" | "all";
+
 /** Turn raw DAILY TRACKER rows into a rent-status snapshot for one month. */
 export function parseTrackerRows(
   values: unknown[][],
   month: number,
   year: number,
   asOf: number = Date.now(),
+  portfolio: Portfolio = "all",
 ): DLRentStatus {
   const paidCol = 4 + (month - 1) * 2; // this month's "Paid $" column
   const priorPaidCol = paidCol - 2; // previous month's "Paid $" column
@@ -46,9 +49,19 @@ export function parseTrackerRows(
 
   const rows: DLRentRow[] = [];
   const properties = new Set<string>();
+  // The tracker is split into "DAD'S PORTFOLIO" then "JACOB'S PROPERTIES"
+  // section banners; track which we're in so we can include only one.
+  let section: "dad" | "jacob" = "dad";
 
   for (const raw of values) {
     if (!Array.isArray(raw)) continue;
+
+    // Section banners (label sits in col A; the rest of the row is empty).
+    const banner = `${String(raw[0] ?? "")} ${String(raw[1] ?? "")}`;
+    if (/jacob'?s?\b/i.test(banner) && /propert/i.test(banner)) { section = "jacob"; continue; }
+    if (/dad'?s?\b/i.test(banner) && /portfolio/i.test(banner)) { section = "dad"; continue; }
+    if (portfolio !== "all" && section !== portfolio) continue;
+
     const address = String(raw[1] ?? "").trim();
     const tenant = String(raw[2] ?? "").trim();
     const rent = money(raw[3]);
