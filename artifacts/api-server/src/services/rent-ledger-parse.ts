@@ -59,10 +59,9 @@ export function parseTrackerRows(
 ): DLRentStatus {
   const { asOf = Date.now(), portfolio = "all", vacant } = opts;
   const paidCol = 4 + (month - 1) * 2; // this month's "Paid $" column
-  const priorPaidCol = paidCol - 2; // previous month's "Paid $" column
   const billingFirst = new Date(year, month - 1, 1).getTime();
-  const priorFirst = new Date(year, month - 2, 1).getTime();
   const daysSinceFirst = Math.max(0, Math.floor((asOf - billingFirst) / DAY_MS));
+  const monthPaidCol = (m: number) => 4 + (m - 1) * 2;
 
   const rows: DLRentRow[] = [];
   const properties = new Set<string>();
@@ -92,30 +91,60 @@ export function parseTrackerRows(
     if (vacant?.has(rowIndex)) continue;
 
     const paid = Math.max(0, money(raw[paidCol]));
-    // "Was a payment made last month?" — the signal for whether a tenant is
-    // current. For January (no prior column in this sheet) assume current.
-    const priorPaid = priorPaidCol >= 4 ? money(raw[priorPaidCol]) : rent;
-    const priorPaymentMade = priorPaid > 0;
     const appliedPaid = Math.min(paid, rent); // credit/overpay doesn't mask others
+
+    // ── Delinquency ──────────────────────────────────────────────────
+    // Tenants pay on varying days and pre-pay, so "didn't pay yet this month"
+    // is NOT delinquent. A tenant is delinquent only when they are carrying a
+    // real aged balance, which we detect two ways:
+    //   (auto) a fully-skipped month between their first payment and two months
+    //          ago — i.e. they missed a month and never caught up; and
+    //   (manual) an operator flag in column A ("D"/"X"/"delinquent") for cases
+    //          the 2026 tracker can't see (e.g. a balance carried from 2025).
+    // An "OK"/"current" flag in column A clears a false positive.
+    const flag = String(raw[0] ?? "").trim().toLowerCase();
+    const forceDelinquent = flag === "d" || flag === "x" || flag.startsWith("delinq");
+    const forceClear = ["ok", "c", "current", "good", "fine"].includes(flag);
+
+    let firstPaymentMonth = 0;
+    for (let m = 1; m <= 12; m++) {
+      if (money(raw[monthPaidCol(m)]) > 0) { firstPaymentMonth = m; break; }
+    }
+    let oldestSkip = 0;
+    if (firstPaymentMonth > 0) {
+      // Months strictly after the first payment and at least two months back
+      // (current and prior month are still within the normal pay window).
+      for (let m = firstPaymentMonth + 1; m <= month - 2; m++) {
+        if (money(raw[monthPaidCol(m)]) <= 0) { oldestSkip = m; break; }
+      }
+    }
+    const delinquent = forceClear ? false : forceDelinquent || oldestSkip > 0;
 
     let status: DLRentRow["status"];
     let daysOverdue = 0;
     let lateFeeDue = 0;
-    if (paid >= rent) {
+    if (delinquent) {
+      status = "delinquent";
+      // Age from the oldest unpaid/short month so "days over" is meaningful.
+      let agingMonth = oldestSkip;
+      if (!agingMonth) {
+        for (let m = firstPaymentMonth || 1; m <= month - 1; m++) {
+          if (money(raw[monthPaidCol(m)]) < rent) { agingMonth = m; break; }
+        }
+      }
+      if (!agingMonth) agingMonth = Math.max(1, month - 1);
+      const ageFrom = new Date(year, agingMonth - 1, 1).getTime();
+      daysOverdue = Math.max(DELINQUENT_DAYS, Math.floor((asOf - ageFrom) / DAY_MS));
+      lateFeeDue = LATE_FEE_AMOUNT;
+    } else if (paid >= rent) {
       // Covers this month (including pre-payments logged before the 1st).
       status = "paid";
-    } else if (!priorPaymentMade) {
-      // No payment last month either → genuinely behind (30+ days).
-      status = "delinquent";
-      daysOverdue = Math.max(DELINQUENT_DAYS, Math.floor((asOf - priorFirst) / DAY_MS));
-      lateFeeDue = LATE_FEE_AMOUNT;
     } else if (paid > 0) {
-      // Part of this month is in; tenant is paying and was current last month.
       status = "partial";
       daysOverdue = daysSinceFirst;
     } else {
-      // Nothing yet this month, but current last month — due date may simply
-      // not have arrived (varies per tenant). Outstanding, but not late.
+      // Nothing yet this month, but current — due date may simply not have
+      // arrived (varies per tenant). Outstanding for the month, but not late.
       status = "unpaid";
       daysOverdue = daysSinceFirst;
     }

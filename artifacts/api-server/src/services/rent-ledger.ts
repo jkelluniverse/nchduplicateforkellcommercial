@@ -76,15 +76,17 @@ interface SheetColor {
 }
 
 /**
- * A red-ish fill marks a vacant unit. We require red to clearly dominate green
- * and blue so the cream/gold theme and green "paid" cells never register.
+ * A red/pink fill marks a vacant unit. We require red to dominate, and green ≈
+ * blue (the signature of red/pink shades), which catches Google Sheets' light
+ * reds (#F4CCCC, #EA9999, #E06666, pure red) while excluding the cream/gold
+ * theme and green "paid" cells (gold/orange have green ≫ blue).
  */
 function isVacantRed(color: SheetColor | null | undefined): boolean {
   if (!color) return false;
   const r = color.red ?? 0;
   const g = color.green ?? 0;
   const b = color.blue ?? 0;
-  return r >= 0.55 && r - g >= 0.2 && r - b >= 0.2;
+  return r >= 0.55 && r - g >= 0.12 && r - b >= 0.12 && Math.abs(g - b) <= 0.12;
 }
 
 interface TrackerData {
