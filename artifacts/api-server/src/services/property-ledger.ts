@@ -112,24 +112,32 @@ export async function getPropertyLedger(
 ): Promise<LedgerStatement> {
   const now = new Date().toISOString();
 
-  // 1. Live Rentec statement (exact presentation).
+  // 1. Live Rentec statement — the TENANT's ledger (rent invoices + late fees +
+  //    payments), which is what Rentec's own statement shows. The per-property
+  //    query only returns bank deposits (payments), so we resolve the property's
+  //    current resident and pull their ledger by renter_id instead.
   if (rentec.hasApiKey()) {
     try {
       const propertyId = await rentec.findRentecPropertyIdByAddress(address);
-      if (propertyId) {
-        const raw = await rentec.getPropertyLedgerLines(propertyId);
+      const renterId = propertyId
+        ? await rentec.getCurrentRenterIdForProperty(propertyId)
+        : null;
+      if (renterId) {
+        const { lines: raw, endingBalance } = await rentec.getTenantLedger(renterId);
         if (raw.length > 0) {
           // Running balance accounts for EVERY transaction (incl. processing
-          // noise) so it ties out to Rentec's real balance; the account-balance
-          // card reads the latest cumulative balance. Only the displayed rows
-          // are filtered, leaving a clean charges-and-payments statement.
+          // noise) so it ties out to Rentec's real balance; only the displayed
+          // rows are filtered, leaving a clean charges-and-payments statement.
           const all = withRunningBalance(raw.map((l) => ({ ...l })));
           const lines = all.filter((l) => !l.hidden);
+          // Prefer Rentec's authoritative ending balance (negative = owes);
+          // fall back to our computed running total.
+          const currentBalance = endingBalance ?? all[0]?.balance ?? 0;
           return {
             source: "rentec",
             address,
             tenantName,
-            currentBalance: all[0]?.balance ?? 0,
+            currentBalance,
             lines,
             fetchedAt: now,
           };

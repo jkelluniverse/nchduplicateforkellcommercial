@@ -235,6 +235,24 @@ export async function diagnose(): Promise<Record<string, unknown>> {
         firstRecords: rows.slice(0, 3),
       };
     }
+    // The TENANT ledger (renter_id) is what drives the property statement: it
+    // should include rent invoices + late fees (charges/debits), not just the
+    // bank deposits the property query returns. summary.ending_balance here is
+    // the authoritative amount owed (negative). Probe it to confirm the charge
+    // record shape and balance sign.
+    if (firstRenterId) {
+      const body = await rcGet<ListResponse<RawObj>>(
+        `/transactions?renter_id=${encodeURIComponent(firstRenterId)}&limit=8`,
+      );
+      const rows = rowsOf<RawObj>(body);
+      probes["/transactions?renter_id"] = {
+        renterId: firstRenterId,
+        count: rows.length,
+        summary: body?.summary ?? null,
+        firstRecordKeys: rows[0] ? Object.keys(rows[0]) : [],
+        firstRecords: rows.slice(0, 8),
+      };
+    }
     out["probes"] = probes;
   }
   return out;
@@ -552,6 +570,8 @@ export interface RentecLedgerLine {
 }
 
 // Card-fee / processing chatter we don't want cluttering the rent statement.
+// (Convenience fees and their offsets are property-side bank entries; they don't
+// belong on the tenant's rent ledger of charges + payments.)
 const LEDGER_NOISE_RE =
   /convenience fee|processing fee|cc fee|card fee|merchant fee|service fee|e-?check fee|transaction fee/i;
 
@@ -560,13 +580,7 @@ function isLedgerNoise(o: RawObj): boolean {
   const text = [pick(o, "notes"), pick(o, "memo"), pick(o, "description")]
     .map((v) => String(v ?? ""))
     .join(" ");
-  if (LEDGER_NOISE_RE.test(text)) return true;
-  // The convenience-fee offset split: pmt_type "O" (Other) with no renter
-  // attached — an internal processor deduction, not a tenant charge/payment.
-  const pmtType = String(pick(o, "pmt_type") ?? "").toUpperCase();
-  const renterId = pick(o, "renter_id");
-  if (pmtType === "O" && (renterId === undefined || renterId === null)) return true;
-  return false;
+  return LEDGER_NOISE_RE.test(text);
 }
 
 /**
@@ -581,42 +595,104 @@ function isLedgerNoise(o: RawObj): boolean {
  * than inferring charge-vs-payment from a (nonexistent) type string.
  * Returns [] when there are no transactions.
  */
+/**
+ * Map one Rentec transaction row to a statement line. Rentec reports a single
+ * signed `amount`: positive reduces what's owed (a payment → credit), negative
+ * is a charge/invoice/late fee (→ debit). Σ(credit − debit) over the lines then
+ * reproduces Rentec's summary.ending_balance (negative = the tenant owes).
+ * Returns null for zero-value rows.
+ */
+function mapTransactionToLine(o: RawObj): RentecLedgerLine | null {
+  const raw = str(pick(o, "transaction_time", "date", "transaction_date", "post_date", "entry_date", "created")) ?? "";
+  // transaction_time is a full ISO timestamp; the statement shows yyyy-mm-dd.
+  const date = /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : raw;
+  const category = str(pick(o, "category_name", "account", "account_name", "gl_account", "gl"));
+  // Invoices carry a label ("Invoice #199") in description; payments put their
+  // text in notes (description blank). memo is usually a raw ID hash — last.
+  const note = str(pick(o, "description", "notes", "memo", "comment", "note", "details"));
+  const amount = num(pick(o, "amount", "total", "value", "amount_total"));
+  let debit = num(pick(o, "debit", "charge", "charge_amount"));
+  let credit = num(pick(o, "credit", "payment", "amount_received", "paid", "payment_amount"));
+  if (debit === 0 && credit === 0 && amount !== 0) {
+    if (amount > 0) credit = amount;
+    else debit = Math.abs(amount);
+  }
+  if (debit === 0 && credit === 0) return null;
+  const desc = note || category || "Transaction";
+  // "0000" is Rentec's placeholder check number for electronic (EasyPay) entries.
+  const refRaw = str(pick(o, "check_num", "check", "check_number", "reference", "ref"));
+  const reference = refRaw && refRaw !== "0000" ? refRaw : null;
+  return {
+    date,
+    description: desc,
+    subDescription: note && category ? category : null,
+    reference,
+    debit: debit || null,
+    credit: credit || null,
+    hidden: isLedgerNoise(o),
+  };
+}
+
+export interface RentecLedger {
+  lines: RentecLedgerLine[];
+  endingBalance: number | null; // authoritative running balance (neg = owes)
+}
+
+/**
+ * The tenant's full Rentec ledger for one renter: charges (rent invoices, late
+ * fees) AND payments, plus the authoritative running balance from
+ * summary.ending_balance. This is the per-TENANT view — querying /transactions
+ * by renter_id returns the receivable charges, unlike the per-property query
+ * which only sees the property's bank deposits (payments).
+ */
+export async function getTenantLedger(renterId: string): Promise<RentecLedger> {
+  const lines: RentecLedgerLine[] = [];
+  let endingBalance: number | null = null;
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const body = await rcGet<ListResponse<RawObj>>(
+      `/transactions?renter_id=${encodeURIComponent(renterId)}&page=${page}&limit=${PAGE_SIZE}`,
+    );
+    const rows = rowsOf<RawObj>(body);
+    for (const r of rows) {
+      const line = mapTransactionToLine(r);
+      if (line) lines.push(line);
+    }
+    // The last page's summary carries the ending balance.
+    if (typeof body?.summary?.ending_balance === "number") endingBalance = body.summary.ending_balance;
+    if (rows.length < PAGE_SIZE) break;
+  }
+  return { lines, endingBalance };
+}
+
+/** Per-property statement lines (bank deposits only — kept for diagnostics). */
 export async function getPropertyLedgerLines(propertyId: string): Promise<RentecLedgerLine[]> {
   const txns = await getTransactionsForProperty(propertyId);
   const lines: RentecLedgerLine[] = [];
   for (const tx of txns) {
-    const o = tx as RawObj;
-    const raw = str(pick(o, "transaction_time", "date", "transaction_date", "post_date", "entry_date", "created")) ?? "";
-    // transaction_time is a full ISO timestamp; the statement shows yyyy-mm-dd.
-    const date = /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : raw;
-    const category = str(pick(o, "category_name", "account", "account_name", "gl_account", "gl"));
-    // `notes` carries the human-readable line ("Tenant Payment of 10.00…");
-    // `description` is usually blank and `memo` is a raw ID hash.
-    const note = str(pick(o, "notes", "description", "memo", "comment", "note", "details"));
-    const amount = num(pick(o, "amount", "total", "value", "amount_total"));
-    let debit = num(pick(o, "debit", "charge", "charge_amount"));
-    let credit = num(pick(o, "credit", "payment", "amount_received", "paid", "payment_amount"));
-    // Rentec reports a single signed amount — split it into the two columns.
-    if (debit === 0 && credit === 0 && amount !== 0) {
-      if (amount > 0) credit = amount;
-      else debit = Math.abs(amount);
-    }
-    if (debit === 0 && credit === 0) continue;
-    const desc = note || category || "Transaction";
-    // "0000" is Rentec's placeholder check number for electronic (EasyPay) entries.
-    const refRaw = str(pick(o, "check_num", "check", "check_number", "reference", "ref"));
-    const reference = refRaw && refRaw !== "0000" ? refRaw : null;
-    lines.push({
-      date,
-      description: desc,
-      subDescription: note && category ? category : null,
-      reference,
-      debit: debit || null,
-      credit: credit || null,
-      hidden: isLedgerNoise(o),
-    });
+    const line = mapTransactionToLine(tx as RawObj);
+    if (line) lines.push(line);
   }
   return lines;
+}
+
+/**
+ * The current resident's renter_id for a property — taken from the property's
+ * `renters` list (the entry with no move_out), falling back to an active lease.
+ */
+export async function getCurrentRenterIdForProperty(propertyId: string): Promise<string | null> {
+  const raw = await rcList<RawObj>("/properties?include_subunits=true");
+  const prop = raw.find((p) => String(pick(p, "property_id", "propertyID", "id") ?? "") === propertyId);
+  const renters = prop ? pick(prop, "renters") : undefined;
+  if (Array.isArray(renters) && renters.length > 0) {
+    const current = (renters as RawObj[]).find((r) => !r["move_out"]) ?? (renters as RawObj[])[0];
+    const id = current ? str(pick(current, "renter_id", "renterID")) : undefined;
+    if (id) return id;
+  }
+  const leases = await getLeases();
+  const lease =
+    leases.find((l) => l.property === propertyId && l.renterId && l.status === "ACTIVE") ??
+    leases.find((l) => l.property === propertyId && l.renterId);
+  return lease?.renterId ?? null;
 }
 
 /** Running ledger balance = last page's summary.ending_balance for a property. */
