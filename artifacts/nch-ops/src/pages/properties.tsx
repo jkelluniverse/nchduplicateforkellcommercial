@@ -47,6 +47,12 @@ function fmtMoney(n: number | null): string {
 }
 
 function fmtDate(iso: string): string {
+  // The backend sends a plain yyyy-mm-dd calendar date (Rentec's own local
+  // date). Format it directly — going through Date.parse treats it as UTC
+  // midnight, which rolls back a day in negative-offset timezones (e.g. an
+  // Eastern user would see 06/01 as 05/31).
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (m) return `${m[2]}/${m[3]}/${m[1]}`;
   const t = Date.parse(iso);
   if (!t) return iso;
   return new Date(t).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
