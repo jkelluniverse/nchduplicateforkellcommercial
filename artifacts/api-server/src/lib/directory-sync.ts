@@ -111,6 +111,7 @@ export async function syncDirectory(): Promise<SyncResult> {
 
     const entries: SyncEntry[] = [];
     const seenPropertyIds = new Set<string>();
+    const seenAddresses = new Set<string>(); // Also dedupe by address
 
     for (const lease of activeLeases) {
       const prop = propById.get(lease.property);
@@ -122,6 +123,11 @@ export async function syncDirectory(): Promise<SyncResult> {
       seenPropertyIds.add(lease.property);
 
       const address = formatPropertyAddress(prop);
+
+      // Also skip if we've already added this address (prevents multi-unit
+      // buildings from showing duplicate rows when sub-units have no active lease)
+      if (seenAddresses.has(address)) continue;
+      seenAddresses.add(address);
 
       function extractTenantInfo(tenant: DLTenant | undefined) {
         if (!tenant) return { name: null, phone: null, email: null };
@@ -166,6 +172,7 @@ export async function syncDirectory(): Promise<SyncResult> {
     // Perform upsert logic against local DB
     let inserted = 0;
     let updated = 0;
+    let removed = 0;
     const now = new Date();
     const syncedPropertyIds: string[] = [];
 
@@ -211,10 +218,41 @@ export async function syncDirectory(): Promise<SyncResult> {
       }
     }
 
+    // Remove duplicate addresses (keep the one with the most resident info).
+    // This handles multi-unit buildings where multiple sub-units have the same
+    // address but no current residents.
+    const allRows = await db.select().from(propertiesTable);
+    const byAddr = new Map<string, typeof allRows>();
+    for (const row of allRows) {
+      const addr = row.address || "";
+      if (!byAddr.has(addr)) byAddr.set(addr, []);
+      byAddr.get(addr)!.push(row);
+    }
+    for (const rows of byAddr.values()) {
+      if (rows.length <= 1) continue;
+      // Score by resident info + prefer non-seed entries
+      const scored = rows.map((r) => ({
+        row: r,
+        score:
+          (r.doorloopPropertyId && !r.doorloopPropertyId.startsWith("seed:") ? 1000 : 0) +
+          (r.resident1Name ? 100 : 0) +
+          (r.resident2Name ? 50 : 0) +
+          (r.resident1Phone ? 10 : 0) +
+          (r.resident2Phone ? 5 : 0),
+      }));
+      scored.sort((a, b) => b.score - a.score);
+      const keep = scored[0]!.row;
+      for (let i = 1; i < scored.length; i++) {
+        const dupe = scored[i]!.row;
+        await db.delete(rentStatusTable).where(eq(rentStatusTable.propertyId, dupe.id));
+        await db.delete(propertiesTable).where(eq(propertiesTable.id, dupe.id));
+        removed++;
+      }
+    }
+
     // Remove properties with no matching active DoorLoop lease — but never
     // touch curated `seed:` rows from the contact sheet (Rentec only manages
     // its own rows).
-    let removed = 0;
     if (syncedPropertyIds.length > 0) {
       const staleRows = await db
         .select({ id: propertiesTable.id })
