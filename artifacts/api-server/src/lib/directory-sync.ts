@@ -1,6 +1,7 @@
 import { db, propertiesTable, rentStatusTable } from "@workspace/db";
 import { eq, notInArray, isNull, and, notLike } from "drizzle-orm";
 import { logger } from "./logger";
+import { normStreet } from "./directory-seed";
 import {
   getProperties,
   getLeases,
@@ -124,10 +125,12 @@ export async function syncDirectory(): Promise<SyncResult> {
 
       const address = formatPropertyAddress(prop);
 
-      // Also skip if we've already added this address (prevents multi-unit
-      // buildings from showing duplicate rows when sub-units have no active lease)
-      if (seenAddresses.has(address)) continue;
-      seenAddresses.add(address);
+      // Also skip if we've already added this street (prevents multi-unit
+      // buildings, and zip+4 variants of the same address, from showing
+      // duplicate rows when sub-units have no active lease).
+      const streetKey = normStreet(address);
+      if (streetKey && seenAddresses.has(streetKey)) continue;
+      if (streetKey) seenAddresses.add(streetKey);
 
       function extractTenantInfo(tenant: DLTenant | undefined) {
         if (!tenant) return { name: null, phone: null, email: null };
@@ -186,17 +189,20 @@ export async function syncDirectory(): Promise<SyncResult> {
         .limit(1);
 
       if (existing) {
+        // Never blank out existing resident info: Rentec sometimes can't resolve
+        // a current tenant for a property and returns null names/phones. Keep the
+        // existing (often seed-sourced) value when the incoming one is empty.
         await db
           .update(propertiesTable)
           .set({
             doorloopLeaseId: entry.doorloopLeaseId,
             address: entry.address,
-            resident1Name: entry.resident1Name,
-            resident1Phone: entry.resident1Phone,
-            resident1Email: entry.resident1Email,
-            resident2Name: entry.resident2Name,
-            resident2Phone: entry.resident2Phone,
-            resident2Email: entry.resident2Email,
+            resident1Name: entry.resident1Name ?? existing.resident1Name,
+            resident1Phone: entry.resident1Phone ?? existing.resident1Phone,
+            resident1Email: entry.resident1Email ?? existing.resident1Email,
+            resident2Name: entry.resident2Name ?? existing.resident2Name,
+            resident2Phone: entry.resident2Phone ?? existing.resident2Phone,
+            resident2Email: entry.resident2Email ?? existing.resident2Email,
             lastSyncedAt: now,
           })
           .where(eq(propertiesTable.id, existing.id));
@@ -220,30 +226,53 @@ export async function syncDirectory(): Promise<SyncResult> {
 
     // Remove duplicate addresses (keep the one with the most resident info).
     // This handles multi-unit buildings where multiple sub-units have the same
-    // address but no current residents.
+    // address but no current residents. Group by STREET (normStreet strips the
+    // city/state/zip), so "...44706" and "...44706-1481" collapse together.
     const allRows = await db.select().from(propertiesTable);
     const byAddr = new Map<string, typeof allRows>();
     for (const row of allRows) {
-      const addr = row.address || "";
-      if (!byAddr.has(addr)) byAddr.set(addr, []);
-      byAddr.get(addr)!.push(row);
+      const key = normStreet(row.address);
+      if (!key) continue; // never group rows with no street
+      if (!byAddr.has(key)) byAddr.set(key, []);
+      byAddr.get(key)!.push(row);
     }
     for (const rows of byAddr.values()) {
       if (rows.length <= 1) continue;
-      // Score by resident info + prefer non-seed entries
-      const scored = rows.map((r) => ({
-        row: r,
-        score:
-          (r.doorloopPropertyId && !r.doorloopPropertyId.startsWith("seed:") ? 1000 : 0) +
-          (r.resident1Name ? 100 : 0) +
-          (r.resident2Name ? 50 : 0) +
-          (r.resident1Phone ? 10 : 0) +
-          (r.resident2Phone ? 5 : 0),
-      }));
-      scored.sort((a, b) => b.score - a.score);
-      const keep = scored[0]!.row;
-      for (let i = 1; i < scored.length; i++) {
-        const dupe = scored[i]!.row;
+      // Keep ONE row per street. Prefer the row with a real (non-seed) Rentec
+      // id so the rent-status/ledger linkage survives; fall back to whichever
+      // has the most resident info. Then backfill the kept row's blank fields
+      // from its siblings so we never lose a seeded resident name/phone before
+      // deleting them.
+      const completeness = (r: (typeof rows)[number]) =>
+        (r.resident1Name ? 8 : 0) +
+        (r.resident2Name ? 4 : 0) +
+        (r.resident1Phone ? 2 : 0) +
+        (r.resident1Email ? 1 : 0);
+      const isReal = (r: (typeof rows)[number]) =>
+        Boolean(r.doorloopPropertyId && !r.doorloopPropertyId.startsWith("seed:"));
+      const sorted = [...rows].sort((a, b) => {
+        // Real Rentec rows first (keep linkage), then by completeness.
+        if (isReal(a) !== isReal(b)) return isReal(a) ? -1 : 1;
+        return completeness(b) - completeness(a);
+      });
+      const keep = sorted[0]!;
+      // Backfill any blank contact fields on the kept row from its siblings.
+      const patch: Record<string, unknown> = {};
+      const fields = [
+        "resident1Name", "resident1Phone", "resident1Email",
+        "resident2Name", "resident2Phone", "resident2Email", "notes",
+      ] as const;
+      for (const f of fields) {
+        if (!keep[f]) {
+          const donor = sorted.find((r) => r[f]);
+          if (donor) patch[f] = donor[f];
+        }
+      }
+      if (Object.keys(patch).length > 0) {
+        await db.update(propertiesTable).set(patch).where(eq(propertiesTable.id, keep.id));
+      }
+      for (let i = 1; i < sorted.length; i++) {
+        const dupe = sorted[i]!;
         await db.delete(rentStatusTable).where(eq(rentStatusTable.propertyId, dupe.id));
         await db.delete(propertiesTable).where(eq(propertiesTable.id, dupe.id));
         removed++;
