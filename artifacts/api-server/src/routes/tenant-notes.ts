@@ -6,6 +6,7 @@ import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth"
 import { notifyUser } from "../lib/web-push";
 import { sendEmail, renderFieldsHtml } from "../lib/email";
 import { logger } from "../lib/logger";
+import { getSituationLedger, activitySince } from "../services/situation-ledger";
 
 const router: IRouter = Router();
 
@@ -22,6 +23,60 @@ function formatDateStr(iso: string | null | undefined): string {
 }
 
 type NoteStatus = "open" | "missed_promise" | "resolved";
+
+function fmtMoney(v: string | number | null | undefined): string {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = typeof v === "string" ? Number(v) : v;
+  if (Number.isNaN(n)) return String(v);
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  open: "Open",
+  missed_promise: "Missed promise",
+  resolved: "Resolved",
+};
+
+/**
+ * Build a human "Field A → B" change summary for an edit, comparing the existing
+ * note against the incoming patch. Returns null when nothing meaningful changed.
+ */
+function describeChanges(
+  before: TenantPaymentNote,
+  patch: Record<string, unknown>,
+): string | null {
+  const parts: string[] = [];
+  if ("expectedPaymentAmount" in patch) {
+    const a = before.expectedPaymentAmount;
+    const b = patch.expectedPaymentAmount as string | null;
+    if (String(a ?? "") !== String(b ?? "")) parts.push(`Amount ${fmtMoney(a)} → ${fmtMoney(b)}`);
+  }
+  if ("expectedPaymentDate" in patch) {
+    const a = before.expectedPaymentDate;
+    const b = patch.expectedPaymentDate as string | null;
+    if (String(a ?? "") !== String(b ?? "")) parts.push(`Expected date ${formatDateStr(a)} → ${formatDateStr(b)}`);
+  }
+  if ("status" in patch) {
+    const a = before.status;
+    const b = patch.status as string;
+    if (a !== b) parts.push(`Status ${STATUS_LABELS[a] ?? a} → ${STATUS_LABELS[b] ?? b}`);
+  }
+  if ("situation" in patch) {
+    const a = before.situation;
+    const b = patch.situation as string;
+    if (a !== b) parts.push("Situation updated");
+  }
+  return parts.length ? parts.join(" · ") : null;
+}
+
+/**
+ * Append a system entry to a situation's comment thread. System entries use the
+ * reserved author "system" so the UI can render them visually distinct, and are
+ * never edited or deleted — they form the audit trail of changes.
+ */
+export async function appendSystemComment(noteId: number, text: string): Promise<void> {
+  await db.insert(tenantNoteCommentsTable).values({ noteId, author: "system", comment: text });
+}
 
 async function sendMissedPromiseAlert(note: TenantPaymentNote): Promise<void> {
   const dateStr = formatDateStr(note.expectedPaymentDate);
@@ -140,6 +195,117 @@ async function autoUpdateStatuses(): Promise<void> {
   }
 }
 
+/** Live-ledger assessment attached to an open situation for the UI banner. */
+export interface LedgerAssessment {
+  currentBalance: number;
+  flag: "paid" | "partial" | "returned" | "none";
+  message: string | null;
+  /** Suggested new amount for the one-tap "Update amount to balance" action. */
+  suggestedAmount: number | null;
+}
+
+function autoApplyEnabled(): boolean {
+  return process.env.SITUATION_AUTO_APPLY === "true";
+}
+
+function noteCreatedDate(note: TenantPaymentNote): string {
+  const c = note.createdAt as unknown;
+  const iso = c instanceof Date ? c.toISOString() : String(c ?? "");
+  return iso.slice(0, 10);
+}
+
+/**
+ * Read one open situation's live Rentec ledger and classify activity SINCE the
+ * situation was created. All amounts come from Rentec — we never derive them.
+ *
+ * Side effects (best-effort, logged as system comments — never touching prior
+ * entries):
+ *   - paid in full   → resolve the situation
+ *   - returned/NSF   → raise the amount to the new balance (auto, it's a reversal)
+ *   - partial        → only auto-applied when SITUATION_AUTO_APPLY=true; the
+ *                      banner always shows what changed regardless
+ * Expected date is NEVER auto-changed.
+ *
+ * Returns the assessment for the UI banner, or null when the ledger couldn't be
+ * read (caller falls back to the stored status).
+ */
+async function assessSituation(note: TenantPaymentNote): Promise<LedgerAssessment | null> {
+  let led;
+  try {
+    led = await getSituationLedger({ address: note.propertyAddress, leaseId: note.doorloopLeaseId });
+  } catch (err) {
+    logger.warn({ err, noteId: note.id }, "assessSituation ledger read failed");
+    return null;
+  }
+  if (!led.resolved) return null;
+
+  const act = activitySince(led, noteCreatedDate(note));
+  const hasReturned = act.returnedPayments.length > 0;
+  const hasPayment = act.payments.length > 0;
+  const balance = led.currentBalance;
+
+  // Paid in full → resolve.
+  if (balance <= 0) {
+    if (note.status !== "resolved") {
+      await db
+        .update(tenantPaymentNotesTable)
+        .set({ status: "resolved", resolvedAt: new Date(), updatedAt: new Date() })
+        .where(eq(tenantPaymentNotesTable.id, note.id));
+      await appendSystemComment(note.id, "Resolved — Rentec shows the balance paid in full — system");
+    }
+    return { currentBalance: balance, flag: "paid", message: "Paid in full per Rentec", suggestedAmount: 0 };
+  }
+
+  // Returned / NSF → raise the amount to match the new (higher) balance.
+  if (hasReturned) {
+    const prev = note.expectedPaymentAmount;
+    const next = balance.toFixed(2);
+    if (String(prev ?? "") !== next) {
+      await db
+        .update(tenantPaymentNotesTable)
+        .set({ expectedPaymentAmount: next, updatedAt: new Date() })
+        .where(eq(tenantPaymentNotesTable.id, note.id));
+      await appendSystemComment(
+        note.id,
+        `Payment returned (NSF) — amount ${fmtMoney(prev)} → ${fmtMoney(next)} to match the new Rentec balance — system`,
+      );
+    }
+    return {
+      currentBalance: balance,
+      flag: "returned",
+      message: `Payment returned — balance is now ${fmtMoney(balance)}`,
+      suggestedAmount: balance,
+    };
+  }
+
+  // Partial payment activity → suggest updating the amount (banner). Auto-apply
+  // only when explicitly enabled; expected date is never changed automatically.
+  if (hasPayment) {
+    if (autoApplyEnabled()) {
+      const prev = note.expectedPaymentAmount;
+      const next = balance.toFixed(2);
+      if (String(prev ?? "") !== next) {
+        await db
+          .update(tenantPaymentNotesTable)
+          .set({ expectedPaymentAmount: next, updatedAt: new Date() })
+          .where(eq(tenantPaymentNotesTable.id, note.id));
+        await appendSystemComment(
+          note.id,
+          `Payment activity — amount auto-updated ${fmtMoney(prev)} → ${fmtMoney(next)} (Rentec balance) — system`,
+        );
+      }
+    }
+    return {
+      currentBalance: balance,
+      flag: "partial",
+      message: `Payment activity since created — balance is now ${fmtMoney(balance)}`,
+      suggestedAmount: balance,
+    };
+  }
+
+  return { currentBalance: balance, flag: "none", message: null, suggestedAmount: null };
+}
+
 // ── GET /api/tenant-notes ─────────────────────────────────────────────────────
 router.get("/tenant-notes", requireAuth, async (_req, res): Promise<void> => {
   try {
@@ -152,6 +318,31 @@ router.get("/tenant-notes", requireAuth, async (_req, res): Promise<void> => {
       .from(tenantPaymentNotesTable)
       .orderBy(
         sql`CASE status WHEN 'missed_promise' THEN 0 WHEN 'open' THEN 1 ELSE 2 END`,
+        // Soonest expected date first within a status group (nulls last), so an
+        // edited expected date re-sorts the row.
+        sql`${tenantPaymentNotesTable.expectedPaymentDate} ASC NULLS LAST`,
+        desc(tenantPaymentNotesTable.createdAt),
+      );
+
+    // Ledger-informed assessment for open situations (best-effort, non-fatal).
+    // Runs the live Rentec check per open note; may auto-resolve/raise amounts.
+    const assessments = new Map<number, LedgerAssessment | null>();
+    for (const n of notes) {
+      if (n.status === "resolved") continue;
+      try {
+        assessments.set(n.id, await assessSituation(n));
+      } catch (err) {
+        logger.warn({ err, noteId: n.id }, "assessSituation non-fatal error");
+      }
+    }
+
+    // Re-read notes whose status/amount the assessment may have changed.
+    const fresh = await db
+      .select()
+      .from(tenantPaymentNotesTable)
+      .orderBy(
+        sql`CASE status WHEN 'missed_promise' THEN 0 WHEN 'open' THEN 1 ELSE 2 END`,
+        sql`${tenantPaymentNotesTable.expectedPaymentDate} ASC NULLS LAST`,
         desc(tenantPaymentNotesTable.createdAt),
       );
 
@@ -160,9 +351,10 @@ router.get("/tenant-notes", requireAuth, async (_req, res): Promise<void> => {
       .from(tenantNoteCommentsTable)
       .orderBy(tenantNoteCommentsTable.createdAt);
 
-    const result = notes.map((n) => ({
+    const result = fresh.map((n) => ({
       ...n,
       comments: comments.filter((c) => c.noteId === n.id),
+      ledger: assessments.get(n.id) ?? null,
     }));
 
     res.json(result);
@@ -209,15 +401,21 @@ router.post(
   },
 );
 
-// ── PUT /api/tenant-notes/:id ─────────────────────────────────────────────────
-router.put(
-  "/tenant-notes/:id",
-  requireAuth,
-  requireRole("jacob"),
-  async (req: AuthRequest, res): Promise<void> => {
+// ── PUT|PATCH /api/tenant-notes/:id — edit-in-place with audit trail ──────────
+// Accepts any subset of editable fields. In the SAME operation it appends a
+// "system" comment summarizing what changed (Amount A → B · Expected date X → Y)
+// so prior comments/reminders are never modified, only added to. The list is
+// re-sorted by the (possibly new) expected date on the client + GET ordering.
+const updateNoteHandler = async (req: AuthRequest, res: any): Promise<void> => {
     try {
       const id = parseInt(req.params.id, 10);
       const body = req.body as Record<string, string | undefined>;
+
+      const [before] = await db
+        .select()
+        .from(tenantPaymentNotesTable)
+        .where(eq(tenantPaymentNotesTable.id, id));
+      if (!before) { res.status(404).json({ error: "Note not found" }); return; }
 
       const patch: Record<string, unknown> = { updatedAt: new Date() };
       if (body.propertyAddress !== undefined) patch.propertyAddress = body.propertyAddress;
@@ -226,7 +424,13 @@ router.put(
       if (body.doorloopLeaseId !== undefined) patch.doorloopLeaseId = body.doorloopLeaseId || null;
       if (body.expectedPaymentDate !== undefined) patch.expectedPaymentDate = body.expectedPaymentDate || null;
       if (body.expectedPaymentAmount !== undefined) patch.expectedPaymentAmount = body.expectedPaymentAmount || null;
-      if (body.status !== undefined) patch.status = body.status as NoteStatus;
+      if (body.status !== undefined) {
+        patch.status = body.status as NoteStatus;
+        if (body.status === "resolved" && before.status !== "resolved") patch.resolvedAt = new Date();
+      }
+
+      // Summarize the change BEFORE writing, so the audit comment reflects the diff.
+      const summary = describeChanges(before, patch);
 
       const [updated] = await db
         .update(tenantPaymentNotesTable)
@@ -234,7 +438,10 @@ router.put(
         .where(eq(tenantPaymentNotesTable.id, id))
         .returning();
 
-      if (!updated) { res.status(404).json({ error: "Note not found" }); return; }
+      if (summary) {
+        const who = req.user?.role ?? "jacob";
+        await appendSystemComment(id, `${summary} — ${who}`);
+      }
 
       const comments = await db
         .select()
@@ -244,11 +451,12 @@ router.put(
 
       res.json({ ...updated, comments });
     } catch (err) {
-      logger.error({ err }, "PUT /tenant-notes/:id failed");
+      logger.error({ err }, "update /tenant-notes/:id failed");
       res.status(500).json({ error: "Failed to update note" });
     }
-  },
-);
+};
+router.put("/tenant-notes/:id", requireAuth, requireRole("jacob"), updateNoteHandler);
+router.patch("/tenant-notes/:id", requireAuth, requireRole("jacob"), updateNoteHandler);
 
 // ── PUT /api/tenant-notes/:id/resolve ────────────────────────────────────────
 router.put(

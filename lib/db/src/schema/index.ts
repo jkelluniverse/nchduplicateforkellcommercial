@@ -6,3 +6,4 @@ export * from "./sync";
 export * from "./rent-status";
 export * from "./tenant-notes";
 export * from "./push";
+export * from "./collection";

@@ -37,7 +37,30 @@ async function createTenantNoteTables() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    logger.info("Tenant note tables ensured");
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS contact_log (
+        id SERIAL PRIMARY KEY,
+        property_address TEXT NOT NULL,
+        tenant_name TEXT,
+        method TEXT NOT NULL DEFAULT 'other',
+        note TEXT,
+        contacted_by TEXT NOT NULL DEFAULT 'jacob',
+        contacted_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS reminder_log (
+        id SERIAL PRIMARY KEY,
+        note_id INTEGER,
+        property_address TEXT NOT NULL,
+        tenant_name TEXT,
+        stage TEXT NOT NULL,
+        amount NUMERIC(10,2),
+        sent_by TEXT NOT NULL DEFAULT 'jacob',
+        sent_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    logger.info("Tenant note + collection tables ensured");
   } catch (err) {
     logger.error({ err }, "Failed to create tenant note tables");
   } finally {

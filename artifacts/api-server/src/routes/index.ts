@@ -10,6 +10,7 @@ import directoryRouter from "./directory";
 import rentStatusRouter from "./rent-status";
 import rentecRouter from "./rentec";
 import tenantNotesRouter from "./tenant-notes";
+import collectionRouter from "./collection";
 
 const router: IRouter = Router();
 
@@ -24,5 +25,6 @@ router.use(directoryRouter);
 router.use(rentStatusRouter);
 router.use(rentecRouter);
 router.use(tenantNotesRouter);
+router.use(collectionRouter);
 
 export default router;
