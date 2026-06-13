@@ -3,7 +3,7 @@ import { SheetButtonRow } from "@/components/sheet-button-row";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import { useLocation } from "wouter";
-import { Plus, ChevronRight, Trash2, X } from "lucide-react";
+import { Plus, ChevronRight, Trash2, X, Pencil, MessageSquare, Phone } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -35,6 +35,13 @@ export interface NoteComment {
   createdAt: string;
 }
 
+export interface LedgerAssessment {
+  currentBalance: number;
+  flag: "paid" | "partial" | "returned" | "none";
+  message: string | null;
+  suggestedAmount: number | null;
+}
+
 export interface TenantNote {
   id: number;
   propertyAddress: string;
@@ -49,6 +56,52 @@ export interface TenantNote {
   updatedAt: string;
   resolvedAt: string | null;
   comments: NoteComment[];
+  ledger?: LedgerAssessment | null;
+}
+
+interface ReminderResponse {
+  id: number;
+  sentAt: string;
+  stage: string;
+  label: string;
+  body: string;
+  phone: string | null;
+  tenantName: string | null;
+}
+
+/** Map a situation's status to the appropriate reminder template stage. */
+function stageForNote(note: { status: string; ledger?: LedgerAssessment | null }): string {
+  if (note.ledger?.flag === "returned") return "payment_returned";
+  if (note.status === "missed_promise") return "missed_promise";
+  return "situation_reminder";
+}
+
+/**
+ * Send a per-stage text reminder: logs it on the server (logged on tap — the
+ * native Messages composer can't confirm a real send), then opens the device's
+ * Messages app prefilled with the recipient + message. Returns false (with an
+ * alert) when no phone is on file.
+ */
+async function sendTextReminder(payload: {
+  noteId?: number;
+  propertyAddress: string;
+  tenantName?: string | null;
+  leaseId?: string | null;
+  stage: string;
+  amount?: number | string | null;
+  date?: string | null;
+}): Promise<boolean> {
+  const res = await apiFetch<ReminderResponse>("/collection/reminders", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  if (!res.phone) {
+    alert("No phone number on file for this tenant in Rentec.");
+    return false;
+  }
+  const sms = `sms:${res.phone}${/(iphone|ipad|mac)/i.test(navigator.userAgent) ? "&" : "?"}body=${encodeURIComponent(res.body)}`;
+  window.location.href = sms;
+  return true;
 }
 
 interface LocalProperty {
@@ -184,6 +237,19 @@ function NoteCard({
                   ? ` · $${Number(note.expectedPaymentAmount).toLocaleString()}`
                   : ""}
               </p>
+            )}
+            {note.ledger && (note.ledger.flag === "returned" || note.ledger.flag === "partial" || note.ledger.flag === "paid") && (
+              <span
+                className={`inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  note.ledger.flag === "returned"
+                    ? "bg-red-100 text-red-700"
+                    : note.ledger.flag === "paid"
+                      ? "bg-green-100 text-green-700"
+                      : "bg-amber-100 text-amber-700"
+                }`}
+              >
+                {note.ledger.flag === "returned" ? "Payment returned" : note.ledger.flag === "paid" ? "Paid in full" : "Payment activity"}
+              </span>
             )}
             <p className="text-[10px] text-muted-foreground mt-1">
               {mostRecentComment
@@ -433,98 +499,259 @@ function NoteDetailSheet({
   const [comment, setComment] = useState("");
   const commentRef = useRef<HTMLInputElement>(null);
 
+  // Inline-edit state (Feature 1: edit in place, never delete-and-recreate).
+  const [editing, setEditing] = useState(false);
+  const [edSituation, setEdSituation] = useState("");
+  const [edDate, setEdDate] = useState("");
+  const [edAmount, setEdAmount] = useState("");
+  const [edStatus, setEdStatus] = useState<TenantNote["status"]>("open");
+
+  const startEdit = () => {
+    if (!note) return;
+    setEdSituation(note.situation);
+    setEdDate(note.expectedPaymentDate ?? "");
+    setEdAmount(note.expectedPaymentAmount ?? "");
+    setEdStatus(note.status);
+    setEditing(true);
+  };
+
+  const patchMutation = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch(`/tenant-notes/${note!.id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    onSuccess: () => { setEditing(false); onChanged(); },
+  });
+
   const postCommentMutation = useMutation({
     mutationFn: (text: string) =>
       apiFetch(`/tenant-notes/${note!.id}/comments`, {
         method: "POST",
         body: JSON.stringify({ comment: text }),
       }),
-    onSuccess: () => {
-      setComment("");
-      onChanged();
-    },
+    onSuccess: () => { setComment(""); onChanged(); },
   });
 
   const resolveMutation = useMutation({
-    mutationFn: () =>
-      apiFetch(`/tenant-notes/${note!.id}/resolve`, { method: "PUT" }),
+    mutationFn: () => apiFetch(`/tenant-notes/${note!.id}/resolve`, { method: "PUT" }),
     onSuccess: () => { onChanged(); onClose(); },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: () =>
-      apiFetch(`/tenant-notes/${note!.id}`, { method: "DELETE" }),
+    mutationFn: () => apiFetch(`/tenant-notes/${note!.id}`, { method: "DELETE" }),
     onSuccess: () => { onChanged(); onClose(); },
+  });
+
+  // One-tap "update amount to current Rentec balance" (Feature 2 banner action).
+  const applyBalanceMutation = useMutation({
+    mutationFn: (amount: number) =>
+      apiFetch(`/tenant-notes/${note!.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ expectedPaymentAmount: amount.toFixed(2) }),
+      }),
+    onSuccess: () => onChanged(),
+  });
+
+  const reminderMutation = useMutation({
+    mutationFn: () =>
+      sendTextReminder({
+        noteId: note!.id,
+        propertyAddress: note!.propertyAddress,
+        tenantName: note!.tenantName,
+        leaseId: note!.doorloopLeaseId,
+        stage: stageForNote(note!),
+        amount: note!.ledger?.suggestedAmount ?? note!.expectedPaymentAmount,
+        date: note!.expectedPaymentDate,
+      }),
+    onSuccess: () => onChanged(),
+  });
+
+  const { data: reminders = [] } = useQuery<Array<{ id: number; stage: string; sentAt: string; sentBy: string }>>({
+    queryKey: ["reminders", note?.id],
+    queryFn: () => apiFetch(`/collection/reminders?noteId=${note!.id}`),
+    enabled: !!note,
   });
 
   if (!note) return null;
 
   const badgeClass = STATUS_BADGE[note.status] ?? "bg-gray-100 text-gray-800";
   const label = STATUS_LABEL[note.status] ?? note.status;
+  const led = note.ledger;
+  const showBanner = led && (led.flag === "partial" || led.flag === "returned" || led.flag === "paid");
 
   return (
     <BottomSheet open={!!note} onClose={onClose} title={note.propertyAddress}>
       <div className="p-4 space-y-4 pb-8">
-        {/* Tenant + status */}
+        {/* Tenant + status + edit toggle */}
         <div className="flex items-center justify-between">
           <p className="text-base font-semibold">{note.tenantName}</p>
-          <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${badgeClass}`}>
-            {label}
-          </span>
-        </div>
-
-        {/* Situation */}
-        <div className="bg-muted/50 rounded-xl p-3">
-          <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide mb-1">
-            Situation
-          </p>
-          <p className="text-sm leading-relaxed">{note.situation}</p>
-        </div>
-
-        {/* Expected payment */}
-        {(note.expectedPaymentDate || note.expectedPaymentAmount) && (
-          <div className="flex gap-6">
-            {note.expectedPaymentDate && (
-              <div>
-                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">
-                  Expected Date
-                </p>
-                <p className="text-sm font-semibold mt-0.5">
-                  {formatShortDate(note.expectedPaymentDate)}
-                </p>
-              </div>
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${badgeClass}`}>{label}</span>
+            {isJacob && !editing && (
+              <button type="button" onClick={startEdit} className="p-1.5 rounded-full hover:bg-muted" aria-label="Edit situation">
+                <Pencil className="w-4 h-4 text-muted-foreground" />
+              </button>
             )}
-            {note.expectedPaymentAmount && (
-              <div>
-                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">
-                  Amount
-                </p>
-                <p className="text-sm font-semibold mt-0.5">
-                  ${Number(note.expectedPaymentAmount).toLocaleString()}
-                </p>
-              </div>
+          </div>
+        </div>
+
+        {/* Ledger-informed banner (Feature 2): partial / returned / paid */}
+        {showBanner && (
+          <div
+            className={`rounded-xl p-3 text-sm ${
+              led!.flag === "returned"
+                ? "bg-red-50 border border-red-200 text-red-800"
+                : led!.flag === "paid"
+                  ? "bg-green-50 border border-green-200 text-green-800"
+                  : "bg-amber-50 border border-amber-200 text-amber-800"
+            }`}
+          >
+            <p className="font-semibold">
+              {led!.flag === "returned" ? "Payment returned" : led!.flag === "paid" ? "Paid in full" : "Payment activity"}
+            </p>
+            {led!.message && <p className="text-xs mt-0.5">{led!.message}</p>}
+            {isJacob && led!.flag !== "paid" && led!.suggestedAmount != null &&
+              String(led!.suggestedAmount.toFixed(2)) !== String(note.expectedPaymentAmount ?? "") && (
+                <button
+                  type="button"
+                  onClick={() => applyBalanceMutation.mutate(led!.suggestedAmount!)}
+                  disabled={applyBalanceMutation.isPending}
+                  className="mt-2 inline-block rounded-lg bg-white/70 border border-current px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+                >
+                  {applyBalanceMutation.isPending
+                    ? "Updating…"
+                    : `Update amount to $${led!.suggestedAmount!.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                </button>
+              )}
+            {led!.flag !== "paid" && (
+              <p className="text-[10px] mt-2 opacity-80">
+                Expected date isn&rsquo;t changed automatically — edit it if the remaining balance needs a new date.
+              </p>
             )}
           </div>
         )}
 
-        {/* Comments */}
+        {/* Situation — view or edit */}
+        {editing ? (
+          <div className="space-y-3 bg-muted/40 rounded-xl p-3">
+            <div>
+              <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">Situation</label>
+              <textarea
+                value={edSituation}
+                onChange={(e) => setEdSituation(e.target.value)}
+                rows={3}
+                className="w-full mt-1 border border-border rounded-lg px-3 py-2 text-sm bg-background resize-none"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">Expected Date</label>
+                <input type="date" value={edDate} onChange={(e) => setEdDate(e.target.value)}
+                  className="w-full mt-1 border border-border rounded-lg px-2 py-2 text-sm bg-background" />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">Amount ($)</label>
+                <input type="number" min="0" step="0.01" value={edAmount} onChange={(e) => setEdAmount(e.target.value)}
+                  className="w-full mt-1 border border-border rounded-lg px-2 py-2 text-sm bg-background" />
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">Status</label>
+              <select value={edStatus} onChange={(e) => setEdStatus(e.target.value as TenantNote["status"])}
+                className="w-full mt-1 border border-border rounded-lg px-2 py-2 text-sm bg-background">
+                <option value="open">Open</option>
+                <option value="missed_promise">Missed Promise</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setEditing(false)}
+                className="flex-1 border border-border rounded-lg py-2 text-sm font-semibold">Cancel</button>
+              <button
+                type="button"
+                onClick={() =>
+                  patchMutation.mutate({
+                    situation: edSituation,
+                    expectedPaymentDate: edDate || null,
+                    expectedPaymentAmount: edAmount || null,
+                    status: edStatus,
+                  })
+                }
+                disabled={patchMutation.isPending}
+                className="flex-1 rounded-lg py-2 text-sm font-semibold text-white disabled:opacity-50"
+                style={{ backgroundColor: "#B23A2E" }}
+              >
+                {patchMutation.isPending ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="bg-muted/50 rounded-xl p-3">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide mb-1">Situation</p>
+              <p className="text-sm leading-relaxed">{note.situation}</p>
+            </div>
+            {(note.expectedPaymentDate || note.expectedPaymentAmount) && (
+              <div className="flex gap-6">
+                {note.expectedPaymentDate && (
+                  <div>
+                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">Expected Date</p>
+                    <p className="text-sm font-semibold mt-0.5">{formatShortDate(note.expectedPaymentDate)}</p>
+                  </div>
+                )}
+                {note.expectedPaymentAmount && (
+                  <div>
+                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">Amount</p>
+                    <p className="text-sm font-semibold mt-0.5">${Number(note.expectedPaymentAmount).toLocaleString()}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Text reminder (Feature 5) */}
+        {isJacob && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => reminderMutation.mutate()}
+              disabled={reminderMutation.isPending}
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-sm font-semibold disabled:opacity-50"
+            >
+              <MessageSquare className="w-4 h-4" />
+              {reminderMutation.isPending ? "Opening…" : "Text reminder"}
+            </button>
+            {reminders.length > 0 && (
+              <span className="text-[10px] text-muted-foreground">
+                Last sent {formatDistanceToNow(new Date(reminders[0].sentAt), { addSuffix: true })} · {reminders.length} total
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Comments (system entries styled distinctly) */}
         <div>
-          <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide mb-2">
-            Comments
-          </p>
+          <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide mb-2">Comments &amp; History</p>
           {note.comments.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">No comments yet</p>
           ) : (
             <div className="space-y-2 mb-3">
-              {note.comments.map((c) => (
-                <div key={c.id} className="bg-muted/40 rounded-xl px-3 py-2">
-                  <p className="text-[10px] font-bold text-muted-foreground">
-                    {AUTHOR_NAMES[c.author] ?? c.author} ·{" "}
-                    {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
-                  </p>
-                  <p className="text-sm mt-0.5">{c.comment}</p>
-                </div>
-              ))}
+              {note.comments.map((c) =>
+                c.author === "system" ? (
+                  <div key={c.id} className="border-l-2 border-blue-300 bg-blue-50/60 rounded-r-lg px-3 py-1.5">
+                    <p className="text-[10px] font-semibold text-blue-700">
+                      System · {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
+                    </p>
+                    <p className="text-xs text-blue-900 mt-0.5">{c.comment}</p>
+                  </div>
+                ) : (
+                  <div key={c.id} className="bg-muted/40 rounded-xl px-3 py-2">
+                    <p className="text-[10px] font-bold text-muted-foreground">
+                      {AUTHOR_NAMES[c.author] ?? c.author} · {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
+                    </p>
+                    <p className="text-sm mt-0.5">{c.comment}</p>
+                  </div>
+                ),
+              )}
             </div>
           )}
 
@@ -554,7 +781,7 @@ function NoteDetailSheet({
         </div>
 
         {/* Jacob-only actions */}
-        {isJacob && (
+        {isJacob && !editing && (
           <SheetButtonRow border className="-mx-4 px-4">
             {note.status === "missed_promise" && (
               <button
@@ -564,10 +791,7 @@ function NoteDetailSheet({
                     "nch_docs_prefill",
                     JSON.stringify({
                       docId: "three_day_notice",
-                      fields: {
-                        property_address: note.propertyAddress,
-                        tenant_name: note.tenantName,
-                      },
+                      fields: { property_address: note.propertyAddress, tenant_name: note.tenantName },
                     }),
                   );
                   setLocation("/docs");
@@ -591,9 +815,7 @@ function NoteDetailSheet({
 
             <button
               type="button"
-              onClick={() => {
-                if (confirm("Delete this note?")) deleteMutation.mutate();
-              }}
+              onClick={() => { if (confirm("Delete this note?")) deleteMutation.mutate(); }}
               disabled={deleteMutation.isPending}
               className="border border-border rounded-xl px-3 py-2.5 text-muted-foreground disabled:opacity-50"
             >
@@ -603,6 +825,108 @@ function NoteDetailSheet({
         )}
       </div>
     </BottomSheet>
+  );
+}
+
+// ── Needs Contacted (Feature 3: unpaid back-check) ────────────────────────────
+
+interface NeedsContactedItem {
+  address: string;
+  tenantName: string | null;
+  leaseId: string | null;
+  amountOwed: number;
+  status: string;
+  daysOverdue: number;
+  phone: string | null;
+}
+
+function NeedsContactedSection({ isJacob }: { isJacob: boolean }) {
+  const qc = useQueryClient();
+  const [expanded, setExpanded] = useState(true);
+
+  const { data } = useQuery<{ entries: NeedsContactedItem[]; source: string }>({
+    queryKey: ["needs-contacted"],
+    queryFn: () => apiFetch(`/collection/needs-contacted`),
+    refetchInterval: 5 * 60 * 1000,
+  });
+
+  const entries = data?.entries ?? [];
+
+  const reminderMutation = useMutation({
+    mutationFn: async (item: NeedsContactedItem) => {
+      await sendTextReminder({
+        propertyAddress: item.address,
+        tenantName: item.tenantName,
+        leaseId: item.leaseId,
+        stage: "needs_contacted",
+        amount: item.amountOwed,
+      });
+      // A sent reminder counts as outreach → log a contact so it drops off the list.
+      await apiFetch(`/collection/contacts`, {
+        method: "POST",
+        body: JSON.stringify({ propertyAddress: item.address, tenantName: item.tenantName, method: "text" }),
+      });
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["needs-contacted"] }),
+  });
+
+  const logContactMutation = useMutation({
+    mutationFn: (item: NeedsContactedItem) =>
+      apiFetch(`/collection/contacts`, {
+        method: "POST",
+        body: JSON.stringify({ propertyAddress: item.address, tenantName: item.tenantName, method: "call" }),
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["needs-contacted"] }),
+  });
+
+  if (!isJacob || entries.length === 0) return null;
+
+  return (
+    <div className="mb-3">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-sm font-bold text-red-700 mb-2"
+      >
+        <ChevronRight className={`w-3.5 h-3.5 transition-transform ${expanded ? "rotate-90" : ""}`} />
+        Needs Contacted ({entries.length})
+      </button>
+      {expanded && (
+        <div className="space-y-2">
+          {entries.map((item) => (
+            <div key={item.address} className="border border-red-200 bg-red-50/40 rounded-lg p-3">
+              <p className="text-sm font-semibold truncate">{item.address}</p>
+              <p className="text-xs text-muted-foreground">
+                {item.tenantName ?? "Unknown tenant"}
+                {item.amountOwed > 0 && ` · owes $${item.amountOwed.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                {item.daysOverdue > 0 && ` · ${item.daysOverdue}d overdue`}
+              </p>
+              <div className="flex gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => reminderMutation.mutate(item)}
+                  disabled={!item.phone || reminderMutation.isPending}
+                  title={item.phone ? "Send a text reminder" : "No phone on file in Rentec"}
+                  className="flex items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  Text
+                </button>
+                <button
+                  type="button"
+                  onClick={() => logContactMutation.mutate(item)}
+                  disabled={logContactMutation.isPending}
+                  className="flex items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+                >
+                  <Phone className="w-3.5 h-3.5" />
+                  Log call
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -636,6 +960,7 @@ export function PaymentSituationsSection() {
 
   return (
     <div className="border-t border-border pt-3">
+      <NeedsContactedSection isJacob={isJacob} />
       <div className="flex items-center justify-between px-0.5 mb-2">
         <h3 className="text-sm font-bold">Payment Situations</h3>
         {isJacob && (
