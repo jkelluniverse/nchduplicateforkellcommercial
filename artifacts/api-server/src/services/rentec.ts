@@ -462,9 +462,11 @@ function mapLease(l: RawObj): DLLease {
     // Rentec's lease balance IS the authoritative amount owed.
     outstandingBalance: balance,
     currentBalance: balance,
-    // If Rentec exposes a dedicated past-due figure use it; otherwise the whole
-    // balance is treated as owed and the aggregator ages it from the cycle.
-    overdueBalance: pastDue > 0 ? pastDue : balance,
+    // Past-due dollars are always reported POSITIVE. Prefer a dedicated Rentec
+    // past-due figure; otherwise derive it from the signed balance, where a
+    // NEGATIVE balance is the amount owed (a positive balance is a credit, never
+    // overdue).
+    overdueBalance: pastDue > 0 ? pastDue : balance < 0 ? -balance : 0,
     lastLateFeesProcessedDate: str(pick(l, "last_late_fee", "lastLateFeesProcessedDate")),
   };
 }
@@ -927,8 +929,16 @@ export async function getRentStatus(
       monthlyRent = prop.monthlyRent;
     }
 
-    const outstanding = lease.outstandingBalance ?? 0; // Rentec lease balance
-    const owesNothing = outstanding <= 0;
+    // Rentec's lease balance is SIGNED: negative = the tenant owes, positive =
+    // paid ahead / credit on account. This is the same convention the statement
+    // ledger uses (running balance = Σ(credit − debit)) and the same one the
+    // Ledger list/ properties screen render ("$X credit" when positive). The
+    // amount actually OWED is therefore the magnitude of a *negative* balance; a
+    // credit is never money owed, so a prepaid tenant (e.g. someone paying
+    // $1,000 against $850 rent) must read as "paid", not delinquent.
+    const rentecBalance = lease.outstandingBalance ?? 0;
+    const outstanding = rentecBalance < 0 ? -rentecBalance : 0; // dollars owed
+    const owesNothing = outstanding <= 0.005;
 
     const startMatch = lease.start?.match(/^(\d{4})-(\d{2})/);
     const startedThisMonthOrLater = startMatch

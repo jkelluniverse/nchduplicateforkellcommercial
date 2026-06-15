@@ -216,9 +216,13 @@ export async function getContactChecklist(
       tenant_first_name: tenantFirstName,
       tenant_phone: phone,
       monthly_rent: r.monthlyRent,
-      // Authoritative amount owed (Rentec lease balance) — falls back to one
-      // month's rent when no lease balance is available.
-      balance_due: Math.round(((lease?.outstandingBalance ?? r.monthlyRent) || 0) * 100) / 100,
+      // Authoritative amount owed. Rentec's lease balance is signed (negative =
+      // owes), so the dollars owed are the magnitude of a negative balance; fall
+      // back to one month's rent only when no lease balance is available.
+      balance_due:
+        lease?.outstandingBalance != null
+          ? Math.round(Math.max(0, -lease.outstandingBalance) * 100) / 100
+          : Math.round((r.monthlyRent || 0) * 100) / 100,
       days_unpaid: r.daysOverdue,
       has_payment_situation: hasPaymentSituation,
       has_contact_log: hasContactLog,
