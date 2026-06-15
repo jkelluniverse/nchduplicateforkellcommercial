@@ -408,7 +408,7 @@ router.post(
 // re-sorted by the (possibly new) expected date on the client + GET ordering.
 const updateNoteHandler = async (req: AuthRequest, res: any): Promise<void> => {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = parseInt(String(req.params.id), 10);
       const body = req.body as Record<string, string | undefined>;
 
       const [before] = await db
@@ -465,7 +465,7 @@ router.put(
   requireRole("jacob"),
   async (req, res): Promise<void> => {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = parseInt(String(req.params.id), 10);
       const [updated] = await db
         .update(tenantPaymentNotesTable)
         .set({ status: "resolved", resolvedAt: new Date(), updatedAt: new Date() })
@@ -488,7 +488,7 @@ router.delete(
   requireRole("jacob"),
   async (req, res): Promise<void> => {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = parseInt(String(req.params.id), 10);
       await db.delete(tenantPaymentNotesTable).where(eq(tenantPaymentNotesTable.id, id));
       res.json({ ok: true });
     } catch (err) {
@@ -504,7 +504,7 @@ router.post(
   requireAuth,
   async (req: AuthRequest, res): Promise<void> => {
     try {
-      const noteId = parseInt(req.params.id, 10);
+      const noteId = parseInt(String(req.params.id), 10);
       const { comment } = req.body as { comment?: string };
 
       if (!comment?.trim()) {

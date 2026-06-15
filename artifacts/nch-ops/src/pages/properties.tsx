@@ -1,25 +1,27 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
-import { Search, ChevronRight, RefreshCw } from "lucide-react";
+import { Search, ChevronRight, RefreshCw, ArrowUpDown, X } from "lucide-react";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem("kc_token")}`, "Content-Type": "application/json" };
 }
 
-interface Property {
+type LedgerListStatus = "paid" | "current" | "past_due";
+
+interface LedgerProperty {
   id: number;
   address: string;
   resident1Name: string | null;
-  resident1Phone: string | null;
-  resident1Email: string | null;
   resident2Name: string | null;
-  resident2Phone: string | null;
-  resident2Email: string | null;
-  notes: string | null;
+  currentBalance: number; // negative = owes, positive = credit
+  pastDue: number;
+  status: LedgerListStatus;
+  daysLate: number;
+  hasSituation: boolean;
 }
 
 interface LedgerLine {
@@ -58,7 +60,7 @@ function fmtDate(iso: string): string {
   return new Date(t).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
 }
 
-function LedgerView({ property, onBack }: { property: Property; onBack: () => void }) {
+function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: () => void }) {
   const { data, isLoading, isError } = useQuery<LedgerStatement>({
     queryKey: ["ledger", property.id],
     queryFn: async () => {
@@ -160,29 +162,122 @@ function LedgerView({ property, onBack }: { property: Property; onBack: () => vo
   );
 }
 
+// ─── Ledger list: sort + filter ─────────────────────────────────────────────
+type BalanceFilter = "all" | "owing" | "paid" | "credit";
+type SortKey = "balance_desc" | "balance_asc" | "address" | "tenant" | "days_late";
+type Delinquency = "all" | "current" | "1_30" | "30_plus";
+type Tri = "all" | "yes" | "no";
+
+const EPS = 0.005;
+const owed = (p: LedgerProperty) => -p.currentBalance; // positive = owes
+
+const SORT_LABEL: Record<SortKey, string> = {
+  balance_desc: "Balance: high → low",
+  balance_asc: "Balance: low → high",
+  address: "Property A–Z",
+  tenant: "Tenant A–Z",
+  days_late: "Most delinquent",
+};
+
+const STATUS_STYLE: Record<LedgerListStatus, { label: string; cls: string }> = {
+  paid: { label: "Paid", cls: "bg-emerald-100 text-emerald-700" },
+  current: { label: "Owes", cls: "bg-amber-100 text-amber-700" },
+  past_due: { label: "Past due", cls: "bg-destructive/15 text-destructive" },
+};
+
 export default function Properties() {
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Property | null>(null);
+  const [selected, setSelected] = useState<LedgerProperty | null>(null);
+  const [balance, setBalance] = useState<BalanceFilter>("owing");
+  const [sort, setSort] = useState<SortKey>("balance_desc");
+  const [delinquency, setDelinquency] = useState<Delinquency>("all");
+  const [situation, setSituation] = useState<Tri>("all");
 
-  const { data: properties = [], isLoading } = useQuery<Property[]>({
-    queryKey: ["properties", search],
+  const { data: properties = [], isLoading } = useQuery<LedgerProperty[]>({
+    queryKey: ["ledger-list"],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (search) params.set("q", search);
-      const r = await fetch(`${API_BASE}/api/properties?${params}`, { headers: authHeaders() });
+      const r = await fetch(`${API_BASE}/api/properties/ledger-list`, { headers: authHeaders() });
       if (!r.ok) throw new Error("Failed to load");
       return r.json();
     },
   });
 
+  const balanceCounts = useMemo(() => {
+    let all = 0, owing = 0, paid = 0, credit = 0;
+    for (const p of properties) {
+      all++;
+      if (owed(p) > EPS) owing++;
+      else if (p.currentBalance > EPS) credit++;
+      else paid++;
+    }
+    return { all, owing, paid, credit };
+  }, [properties]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const matchBalance = (p: LedgerProperty) =>
+      balance === "all" ||
+      (balance === "owing" && owed(p) > EPS) ||
+      (balance === "paid" && Math.abs(p.currentBalance) <= EPS) ||
+      (balance === "credit" && p.currentBalance > EPS);
+    const matchDelinq = (p: LedgerProperty) =>
+      delinquency === "all" ||
+      (delinquency === "current" && p.daysLate === 0) ||
+      (delinquency === "1_30" && p.daysLate >= 1 && p.daysLate <= 30) ||
+      (delinquency === "30_plus" && p.daysLate > 30);
+    const matchSit = (p: LedgerProperty) =>
+      situation === "all" || (situation === "yes" ? p.hasSituation : !p.hasSituation);
+    const matchSearch = (p: LedgerProperty) =>
+      !q ||
+      p.address.toLowerCase().includes(q) ||
+      (p.resident1Name?.toLowerCase().includes(q) ?? false) ||
+      (p.resident2Name?.toLowerCase().includes(q) ?? false);
+
+    const out = properties.filter(
+      (p) => matchBalance(p) && matchDelinq(p) && matchSit(p) && matchSearch(p),
+    );
+
+    out.sort((a, b) => {
+      switch (sort) {
+        case "balance_desc": return owed(b) - owed(a);
+        case "balance_asc": return owed(a) - owed(b);
+        case "address": return a.address.localeCompare(b.address);
+        case "tenant": return (a.resident1Name ?? "~").localeCompare(b.resident1Name ?? "~");
+        case "days_late": return b.daysLate - a.daysLate;
+        default: return 0;
+      }
+    });
+    return out;
+  }, [properties, search, balance, sort, delinquency, situation]);
+
+  const chips: { label: string; clear: () => void }[] = [];
+  if (delinquency !== "all")
+    chips.push({ label: { current: "Current", "1_30": "1–30 days", "30_plus": "30+ days" }[delinquency], clear: () => setDelinquency("all") });
+  if (situation !== "all")
+    chips.push({ label: situation === "yes" ? "Has situation" : "No situation", clear: () => setSituation("all") });
+
+  const clearAll = () => {
+    setBalance("all");
+    setDelinquency("all");
+    setSituation("all");
+    setSearch("");
+  };
+
   if (selected) {
     return <LedgerView property={selected} onBack={() => setSelected(null)} />;
   }
 
+  const segments: { key: BalanceFilter; label: string; count: number }[] = [
+    { key: "owing", label: "Has balance", count: balanceCounts.owing },
+    { key: "paid", label: "Paid up", count: balanceCounts.paid },
+    { key: "credit", label: "Credit", count: balanceCounts.credit },
+    { key: "all", label: "All", count: balanceCounts.all },
+  ];
+
   return (
     <div className="pb-20">
-      <div className="bg-primary text-primary-foreground p-4 sticky top-0 z-10 shadow-md">
-        <h1 className="text-2xl font-bold mb-3">Properties</h1>
+      <div className="bg-primary text-primary-foreground p-4 sticky top-0 z-10 shadow-md space-y-3">
+        <h1 className="text-2xl font-bold">Ledger</h1>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
           <Input
@@ -192,36 +287,138 @@ export default function Properties() {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+
+        {/* Balance segmented toggle with live counts */}
+        <div className="grid grid-cols-4 gap-1 bg-primary-foreground/15 rounded-xl p-1 text-xs">
+          {segments.map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => setBalance(s.key)}
+              className={`rounded-lg py-1.5 font-semibold transition-colors ${
+                balance === s.key ? "bg-primary-foreground text-primary" : "text-primary-foreground/80"
+              }`}
+            >
+              <div className="leading-tight">{s.label}</div>
+              <div className="tabular-nums opacity-80">{s.count}</div>
+            </button>
+          ))}
+        </div>
+
+        {/* Sort + secondary filters */}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="relative inline-flex items-center gap-1 bg-primary-foreground/15 rounded-lg pl-2 pr-1 h-8">
+            <ArrowUpDown className="w-3.5 h-3.5 opacity-80" />
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortKey)}
+              className="bg-transparent text-primary-foreground font-semibold outline-none h-8 pr-1 [&>option]:text-foreground"
+            >
+              {(Object.keys(SORT_LABEL) as SortKey[]).map((k) => (
+                <option key={k} value={k}>{SORT_LABEL[k]}</option>
+              ))}
+            </select>
+          </div>
+
+          <select
+            value={delinquency}
+            onChange={(e) => setDelinquency(e.target.value as Delinquency)}
+            className="bg-primary-foreground/15 text-primary-foreground font-semibold rounded-lg h-8 px-2 outline-none [&>option]:text-foreground"
+          >
+            <option value="all">Any age</option>
+            <option value="current">Current (0d)</option>
+            <option value="1_30">1–30 days</option>
+            <option value="30_plus">30+ days</option>
+          </select>
+
+          <select
+            value={situation}
+            onChange={(e) => setSituation(e.target.value as Tri)}
+            className="bg-primary-foreground/15 text-primary-foreground font-semibold rounded-lg h-8 px-2 outline-none [&>option]:text-foreground"
+          >
+            <option value="all">Any situation</option>
+            <option value="yes">Has situation</option>
+            <option value="no">No situation</option>
+          </select>
+        </div>
+
+        {/* Removable chips + count */}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          {chips.map((c) => (
+            <button
+              key={c.label}
+              type="button"
+              onClick={c.clear}
+              className="inline-flex items-center gap-1 bg-primary-foreground/20 rounded-full pl-2.5 pr-1.5 py-1 font-medium"
+            >
+              {c.label}<X className="w-3 h-3" />
+            </button>
+          ))}
+          {(chips.length > 0 || balance !== "all" || search) && (
+            <button type="button" onClick={clearAll} className="underline opacity-80 hover:opacity-100">
+              Clear filters
+            </button>
+          )}
+          <span className="ml-auto opacity-80 tabular-nums">
+            Showing {filtered.length} of {properties.length}
+          </span>
+        </div>
       </div>
 
       <div className="p-4 space-y-3">
         {isLoading ? (
           Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-20 w-full rounded-xl" />)
-        ) : properties.length === 0 ? (
-          <div className="text-center py-10 text-muted-foreground">No properties found.</div>
+        ) : filtered.length === 0 ? (
+          <div className="text-center py-10 text-muted-foreground">No properties match these filters.</div>
         ) : (
-          properties.map((prop) => (
-            <Card
-              key={prop.id}
-              className="hover:shadow-md transition-shadow cursor-pointer active:bg-muted/50"
-              onClick={() => setSelected(prop)}
-            >
-              <CardContent className="p-4 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <h3 className="font-semibold text-sm">{prop.address}</h3>
-                  {prop.resident1Name && (
-                    <p className="text-xs text-muted-foreground mt-1">{prop.resident1Name}</p>
-                  )}
-                  {prop.resident2Name && (
-                    <p className="text-xs text-muted-foreground">{prop.resident2Name}</p>
-                  )}
-                </div>
-                <div className="flex items-center gap-1 text-primary text-xs font-medium shrink-0">
-                  Statement <ChevronRight className="w-4 h-4" />
-                </div>
-              </CardContent>
-            </Card>
-          ))
+          filtered.map((prop) => {
+            const o = owed(prop);
+            const st = STATUS_STYLE[prop.status];
+            return (
+              <Card
+                key={prop.id}
+                className="hover:shadow-md transition-shadow cursor-pointer active:bg-muted/50"
+                onClick={() => setSelected(prop)}
+              >
+                <CardContent className="p-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="font-semibold text-sm truncate">{prop.address}</h3>
+                    {prop.resident1Name && (
+                      <p className="text-xs text-muted-foreground mt-1 truncate">{prop.resident1Name}</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                      <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${st.cls}`}>
+                        {st.label}
+                      </span>
+                      {prop.daysLate > 0 && (
+                        <span className="text-[10px] font-semibold text-destructive">{prop.daysLate}d late</span>
+                      )}
+                      {prop.hasSituation && (
+                        <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                          Situation
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <div className="text-right">
+                      {o > EPS ? (
+                        <div className="text-sm font-bold tabular-nums text-destructive">{fmtMoney(o)}</div>
+                      ) : prop.currentBalance > EPS ? (
+                        <div className="text-sm font-bold tabular-nums text-emerald-600">{fmtMoney(prop.currentBalance)}</div>
+                      ) : (
+                        <div className="text-sm font-bold tabular-nums text-emerald-600">$0</div>
+                      )}
+                      <div className="text-[10px] text-muted-foreground">
+                        {o > EPS ? "owed" : prop.currentBalance > EPS ? "credit" : "paid"}
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })
         )}
       </div>
     </div>
