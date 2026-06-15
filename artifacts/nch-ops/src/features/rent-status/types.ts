@@ -1,4 +1,10 @@
-export type RentStatusValue = "paid" | "unpaid" | "late" | "delinquent" | "partial";
+export type RentStatusValue =
+  | "paid"
+  | "unpaid"
+  | "late"
+  | "delinquent"
+  | "partial"
+  | "returned_payment";
 
 export interface RentSummary {
   month: string;
@@ -14,9 +20,18 @@ export interface RentSummary {
   total_expected: number;
   total_remaining?: number;
   collection_rate: number;
+  resolved_count?: number;
+  returned_payments?: { count: number; total_balance: number };
   last_updated_at: string;
-  source?: "rentec" | "local" | "ledger";
+  source?: "rentec" | "local" | "ledger" | "doorloop";
 }
+
+export type OverrideStatus =
+  | "vacated"
+  | "written_off"
+  | "arrangement"
+  | "paid_cash"
+  | "other";
 
 export interface RentRow {
   id: number;
@@ -34,6 +49,19 @@ export interface RentRow {
   daysOverdue: number;
   notes: string | null;
   updatedAt: string;
+  // Kept as `doorloopLeaseId` deliberately (target convention).
+  doorloopLeaseId?: string | null;
+  propertyDoorloopId?: string | null;
+  override?: boolean;
+  overrideId?: number | null;
+  overrideStatus?: OverrideStatus | null;
+  overrideReason?: string | null;
+  overrideNotes?: string | null;
+  overrideCreatedAt?: string | null;
+  returnedDate?: string | null;
+  returnedOriginalAmount?: number | null;
+  returnedOriginalDate?: string | null;
+  returnedBalance?: number | null;
 }
 
 export interface RentPropertyDetail {

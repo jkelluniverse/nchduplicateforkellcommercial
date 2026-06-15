@@ -4,6 +4,7 @@ import { logger } from "./lib/logger";
 import { initSocket } from "./lib/socket";
 import { ensureMonthRows } from "./routes/rent-status";
 import { runDailyReminders } from "./routes/tenant-notes";
+import { sendFollowUpReminder } from "./routes/contact-checklist";
 import { syncDirectory } from "./lib/directory-sync";
 import { seedDirectoryFromContacts } from "./lib/directory-seed";
 import { db, usersTable, pool } from "@workspace/db";
@@ -34,7 +35,52 @@ async function createTenantNoteTables() {
         note_id INTEGER REFERENCES tenant_payment_notes(id) ON DELETE CASCADE,
         author TEXT NOT NULL,
         comment TEXT NOT NULL,
+        kind TEXT DEFAULT 'user',
         created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    // Backfill columns added after the initial table shape (idempotent).
+    await client.query(
+      `ALTER TABLE tenant_payment_notes ADD COLUMN IF NOT EXISTS ledger_ack_balance NUMERIC(10,2)`,
+    );
+    await client.query(
+      `ALTER TABLE tenant_note_comments ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'user'`,
+    );
+    // Monthly communication checklist log (Awaiting Communication). The
+    // doorloop_lease_id column carries a Rentec lease id here.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS monthly_contact_log (
+        id SERIAL PRIMARY KEY,
+        property_address TEXT NOT NULL,
+        tenant_name TEXT,
+        doorloop_lease_id TEXT,
+        month INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        status TEXT DEFAULT 'done',
+        contacted_at TIMESTAMPTZ DEFAULT NOW(),
+        contacted_by TEXT NOT NULL DEFAULT 'jacob',
+        contact_method TEXT,
+        notes TEXT,
+        sms_sent_at TIMESTAMPTZ,
+        CONSTRAINT monthly_contact_log_property_month_year_unique
+          UNIQUE (property_address, month, year)
+      )
+    `);
+    // Manual rent-status overrides ("Resolved This Month").
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rent_status_overrides (
+        id SERIAL PRIMARY KEY,
+        property_address TEXT NOT NULL,
+        doorloop_lease_id TEXT,
+        month INTEGER NOT NULL,
+        year INTEGER NOT NULL,
+        override_status TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        notes TEXT,
+        created_by TEXT NOT NULL DEFAULT 'jacob',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT rent_status_overrides_property_month_year_unique
+          UNIQUE (property_address, month, year)
       )
     `);
     await client.query(`
@@ -195,6 +241,20 @@ server.listen(port, () => {
     void runDailyReminders();
     setInterval(() => { void runDailyReminders(); }, 24 * 60 * 60 * 1000);
   }, msUntilNext8AM());
+
+  // Daily 9 AM communication-checklist follow-up reminder. Self-guards (no-ops
+  // before the 6th, or when push isn't configured / nothing needs follow-up).
+  const msUntilNext9AM = () => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(9, 0, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    return next.getTime() - now.getTime();
+  };
+  setTimeout(() => {
+    void sendFollowUpReminder();
+    setInterval(() => { void sendFollowUpReminder(); }, 24 * 60 * 60 * 1000);
+  }, msUntilNext9AM());
 
   // Populate the directory from the curated contact seed (idempotent,
   // non-destructive), then run the Rentec directory sync on startup and every

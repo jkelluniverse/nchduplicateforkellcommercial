@@ -67,6 +67,22 @@ export function logPayment(
   });
 }
 
+export interface OverrideInput {
+  property_address: string;
+  doorloop_lease_id?: string | null;
+  override_status: string;
+  reason: string;
+  notes?: string | null;
+}
+
+export function postOverride(body: OverrideInput): Promise<unknown> {
+  return request("/rent-status/override", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function deleteOverride(id: number): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/rent-status/override/${id}`, { method: "DELETE" });
+}
+
 export const rentKeys = {
   all: ["rent-status"] as const,
   summary: () => [...rentKeys.all, "summary"] as const,

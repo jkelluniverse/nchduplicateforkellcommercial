@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq, and, sql, desc } from "drizzle-orm";
-import { db, tenantPaymentNotesTable, tenantNoteCommentsTable } from "@workspace/db";
+import { db, tenantPaymentNotesTable, tenantNoteCommentsTable, monthlyContactLogTable } from "@workspace/db";
 import type { TenantPaymentNote } from "@workspace/db";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth";
 import { notifyUser } from "../lib/web-push";
@@ -75,7 +75,9 @@ function describeChanges(
  * never edited or deleted — they form the audit trail of changes.
  */
 export async function appendSystemComment(noteId: number, text: string): Promise<void> {
-  await db.insert(tenantNoteCommentsTable).values({ noteId, author: "system", comment: text });
+  await db
+    .insert(tenantNoteCommentsTable)
+    .values({ noteId, author: "system", comment: text, kind: "system" });
 }
 
 async function sendMissedPromiseAlert(note: TenantPaymentNote): Promise<void> {
@@ -244,8 +246,8 @@ async function assessSituation(note: TenantPaymentNote): Promise<LedgerAssessmen
   const hasPayment = act.payments.length > 0;
   const balance = led.currentBalance;
 
-  // Paid in full → resolve.
-  if (balance <= 0) {
+  // Paid in full → resolve. Treat a residual ≤ $0.50 as fully paid (rounding).
+  if (balance <= 0.5) {
     if (note.status !== "resolved") {
       await db
         .update(tenantPaymentNotesTable)
@@ -428,6 +430,15 @@ const updateNoteHandler = async (req: AuthRequest, res: any): Promise<void> => {
         patch.status = body.status as NoteStatus;
         if (body.status === "resolved" && before.status !== "resolved") patch.resolvedAt = new Date();
       }
+      // Acknowledging a ledger flag (Dismiss / one-tap apply): records the
+      // Rentec balance Jacob last saw so the banner stays quiet until it moves.
+      // Not part of the change summary — no audit comment for a bare ack.
+      if (body.ledgerAckBalance !== undefined) {
+        patch.ledgerAckBalance =
+          body.ledgerAckBalance === null || body.ledgerAckBalance === ""
+            ? null
+            : String(body.ledgerAckBalance);
+      }
 
       // Summarize the change BEFORE writing, so the audit comment reflects the diff.
       const summary = describeChanges(before, patch);
@@ -521,6 +532,83 @@ router.post(
     } catch (err) {
       logger.error({ err }, "POST /tenant-notes/:id/comments failed");
       res.status(500).json({ error: "Failed to post comment" });
+    }
+  },
+);
+
+/** Marker comment text logged whenever a reminder text is sent. */
+const REMINDER_COMMENT = "Reminder text sent";
+
+// ── POST /api/tenant-notes/:id/remind ────────────────────────────────────────
+// Logs that a reminder text was sent: appends a "Reminder text sent" comment
+// (kind='reminder', powering the per-situation reminder history) and feeds the
+// monthly contact log, mirroring how the Awaiting Communication checklist
+// records SMS contact (idempotent within the month).
+router.post(
+  "/tenant-notes/:id/remind",
+  requireAuth,
+  async (req: AuthRequest, res): Promise<void> => {
+    try {
+      const noteId = parseInt(String(req.params.id), 10);
+      if (!noteId || isNaN(noteId)) {
+        res.status(400).json({ error: "Invalid note id" });
+        return;
+      }
+      const [note] = await db
+        .select()
+        .from(tenantPaymentNotesTable)
+        .where(eq(tenantPaymentNotesTable.id, noteId));
+      if (!note) {
+        res.status(404).json({ error: "Note not found" });
+        return;
+      }
+
+      const author = req.user?.role ?? "jacob";
+
+      const [comment] = await db
+        .insert(tenantNoteCommentsTable)
+        .values({ noteId, author, comment: REMINDER_COMMENT, kind: "reminder" })
+        .returning();
+
+      // Feed the monthly contact log (idempotent within the month). The
+      // doorloop_lease_id column carries a Rentec lease id here.
+      const now = new Date();
+      const month = now.getMonth() + 1;
+      const year = now.getFullYear();
+      await db
+        .insert(monthlyContactLogTable)
+        .values({
+          propertyAddress: note.propertyAddress,
+          tenantName: note.tenantName,
+          doorloopLeaseId: note.doorloopLeaseId ?? null,
+          month,
+          year,
+          status: "awaiting_reply",
+          contactedBy: author,
+          contactMethod: "sms",
+          notes: "Situation reminder",
+          smsSentAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [
+            monthlyContactLogTable.propertyAddress,
+            monthlyContactLogTable.month,
+            monthlyContactLogTable.year,
+          ],
+          set: {
+            status: "awaiting_reply",
+            contactMethod: "sms",
+            contactedAt: now,
+            contactedBy: author,
+            smsSentAt: now,
+          },
+        })
+        .catch((err) => logger.warn({ err }, "remind: contact-log feed failed (non-fatal)"));
+
+      res.status(201).json(comment);
+    } catch (err) {
+      logger.error({ err }, "POST /tenant-notes/:id/remind failed");
+      res.status(500).json({ error: "Failed to log reminder" });
     }
   },
 );

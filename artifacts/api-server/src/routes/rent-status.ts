@@ -16,11 +16,14 @@ import {
   db,
   rentStatusTable,
   propertiesTable,
+  rentStatusOverridesTable,
   type RentStatus,
 } from "@workspace/db";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth";
 import { getLiveRentStatus, hasLiveSource, type RentSource } from "../services/rent-source";
 import { type DLRentRow } from "../services/rentec";
+import { getOverrideMap, isOverrideStatus } from "../services/rent-overrides";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
@@ -44,15 +47,67 @@ function useLive(): boolean {
 async function fetchLive(
   month: number,
   year: number,
-): Promise<{ summary: ReturnType<typeof buildSummaryFromDoorLoopRows>; rows: ReturnType<typeof mapDoorLoopRow>[] } | null> {
+): Promise<{ summary: ReturnType<typeof buildSummaryFromDoorLoopRows>; rows: ReturnType<typeof annotateOverride>[] } | null> {
   const result = await getLiveRentStatus(month, year);
   if (!result) return null;
   const { data: snap, source } = result;
   const localProps = await db.select().from(propertiesTable);
   const idx = buildPropIndex(localProps);
-  const mappedRows = snap.rows.map((r, i) => mapDoorLoopRow(r, i, month, year, idx));
-  const summary = buildSummaryFromDoorLoopRows(mappedRows, month, year, snap.uniquePropertyCount, source);
+  const overrides = await getOverrideMap(month, year);
+  const mappedRows = snap.rows
+    .map((r, i) => mapDoorLoopRow(r, i, month, year, idx))
+    .map((r) => annotateOverride(r, overrides));
+  // Manually-resolved properties are excluded from the status buckets and the
+  // delinquent/unpaid totals; they are surfaced separately as "resolved".
+  const resolvedCount = mappedRows.filter((r) => r.override).length;
+  const active = mappedRows.filter((r) => !r.override);
+  const summary = buildSummaryFromDoorLoopRows(
+    active,
+    month,
+    year,
+    snap.uniquePropertyCount,
+    source,
+    resolvedCount,
+  );
   return { summary, rows: mappedRows };
+}
+
+type OverrideAnnotation = {
+  override: boolean;
+  overrideId: number | null;
+  overrideStatus: string | null;
+  overrideReason: string | null;
+  overrideNotes: string | null;
+  overrideCreatedAt: string | null;
+};
+
+/** Attach override fields to a mapped row (override:false when none exists). */
+function annotateOverride(
+  row: ReturnType<typeof mapDoorLoopRow>,
+  overrides: Awaited<ReturnType<typeof getOverrideMap>>,
+): ReturnType<typeof mapDoorLoopRow> & OverrideAnnotation {
+  const o = overrides.get(row.address);
+  if (!o) {
+    return {
+      ...row,
+      override: false,
+      overrideId: null,
+      overrideStatus: null,
+      overrideReason: null,
+      overrideNotes: null,
+      overrideCreatedAt: null,
+    };
+  }
+  return {
+    ...row,
+    doorloopLeaseId: o.doorloopLeaseId ?? row.doorloopLeaseId,
+    override: true,
+    overrideId: o.id,
+    overrideStatus: o.overrideStatus,
+    overrideReason: o.reason,
+    overrideNotes: o.notes,
+    overrideCreatedAt: o.createdAt ? o.createdAt.toISOString() : null,
+  };
 }
 
 interface PropIndex {
@@ -120,6 +175,8 @@ function mapDoorLoopRow(
     paymentDate: r.paymentDate,
     daysOverdue: r.daysOverdue,
     notes: null as string | null,
+    // Kept name for output-shape compatibility — value is a Rentec lease id.
+    doorloopLeaseId: (r.leaseId as string | null) ?? null,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -130,6 +187,7 @@ function buildSummaryFromDoorLoopRows(
   year: number,
   uniquePropertyCount: number,
   source: RentSource = "rentec",
+  resolvedCount = 0,
 ) {
   const buckets: Record<RentStatus["status"], typeof rows> = {
     paid: [], unpaid: [], late: [], delinquent: [], partial: [],
@@ -196,6 +254,11 @@ function buildSummaryFromDoorLoopRows(
     total_expected: round2(sumMonthlyRent),
     total_remaining: remainingThisMonth,
     collection_rate: collectionRate,
+    // "N resolved this month" — properties manually overridden off the list.
+    resolved_count: resolvedCount,
+    // Rentec's rent-status snapshot has no returned/NSF bucket, so this is
+    // always zero here (kept for output-shape parity with the dashboard).
+    returned_payments: { count: 0, total_balance: 0 },
     last_updated_at: new Date().toISOString(),
     source,
   };
@@ -395,6 +458,8 @@ function buildSummaryFromLocal(rows: RentStatus[], month: number, year: number) 
     total_collected_mtd: round2(totalCollectedMtd),
     total_expected: round2(totalExpected),
     collection_rate: collectionRate,
+    resolved_count: 0,
+    returned_payments: { count: 0, total_balance: 0 },
     last_updated_at: new Date().toISOString(),
     source: "local" as const,
   };
@@ -547,6 +612,24 @@ router.get("/rent-status/months", requireAuth, async (_req, res): Promise<void> 
   const list = has ? result : [{ month: cur.month, year: cur.year }, ...result];
 
   res.json(list.map((r) => ({ month: r.month, year: r.year, label: monthName(r.month, r.year) })));
+});
+
+// GET /api/rent-status/overrides?month=&year= — overrides for a month.
+// Registered before the generic /:propertyId route so "overrides" isn't parsed
+// as a property id.
+router.get("/rent-status/overrides", requireAuth, async (req, res): Promise<void> => {
+  const cur = currentMonthYear();
+  const month = parseInt(String(req.query.month ?? cur.month), 10);
+  const year = parseInt(String(req.query.year ?? cur.year), 10);
+  if (!month || month < 1 || month > 12 || !year) {
+    res.status(400).json({ error: "Invalid month or year" });
+    return;
+  }
+  const rows = await db
+    .select()
+    .from(rentStatusOverridesTable)
+    .where(and(eq(rentStatusOverridesTable.month, month), eq(rentStatusOverridesTable.year, year)));
+  res.json(rows);
 });
 
 // GET /api/rent-status/:propertyId — full payment history across all months
@@ -758,6 +841,90 @@ router.put(
     }
 
     res.json(mapRow(updated));
+  },
+);
+
+// ─── Manual status overrides (resolve a delinquent property) ───────────────
+
+// POST /api/rent-status/override — create/update this month's override.
+router.post(
+  "/rent-status/override",
+  requireAuth,
+  requireRole("jacob"),
+  async (req: AuthRequest, res): Promise<void> => {
+    const body = (req.body ?? {}) as {
+      property_address?: string;
+      doorloop_lease_id?: string;
+      override_status?: string;
+      reason?: string;
+      notes?: string;
+    };
+
+    if (!body.property_address || !body.override_status || !body.reason) {
+      res.status(400).json({ error: "property_address, override_status and reason are required" });
+      return;
+    }
+    if (!isOverrideStatus(body.override_status)) {
+      res.status(400).json({ error: "Invalid override_status" });
+      return;
+    }
+
+    const { month, year } = currentMonthYear();
+    try {
+      const [row] = await db
+        .insert(rentStatusOverridesTable)
+        .values({
+          propertyAddress: body.property_address,
+          doorloopLeaseId: body.doorloop_lease_id ?? null,
+          month,
+          year,
+          overrideStatus: body.override_status,
+          reason: body.reason,
+          notes: body.notes ?? null,
+          createdBy: req.user?.role ?? "jacob",
+        })
+        .onConflictDoUpdate({
+          target: [
+            rentStatusOverridesTable.propertyAddress,
+            rentStatusOverridesTable.month,
+            rentStatusOverridesTable.year,
+          ],
+          set: {
+            doorloopLeaseId: body.doorloop_lease_id ?? null,
+            overrideStatus: body.override_status,
+            reason: body.reason,
+            notes: body.notes ?? null,
+            createdBy: req.user?.role ?? "jacob",
+            createdAt: new Date(),
+          },
+        })
+        .returning();
+      res.status(201).json(row);
+    } catch (err) {
+      logger.error({ err }, "POST /rent-status/override failed");
+      res.status(500).json({ error: "Failed to save override" });
+    }
+  },
+);
+
+// DELETE /api/rent-status/override/:id — remove an override (undo).
+router.delete(
+  "/rent-status/override/:id",
+  requireAuth,
+  requireRole("jacob"),
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    if (!id || isNaN(id)) {
+      res.status(400).json({ error: "Invalid id" });
+      return;
+    }
+    try {
+      await db.delete(rentStatusOverridesTable).where(eq(rentStatusOverridesTable.id, id));
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err }, "DELETE /rent-status/override/:id failed");
+      res.status(500).json({ error: "Failed to remove override" });
+    }
   },
 );
 

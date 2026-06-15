@@ -25,6 +25,7 @@ const STATUS_LABEL: Record<RentStatusValue, string> = {
   late: "Late",
   delinquent: "Delinquent",
   partial: "Partial",
+  returned_payment: "Returned",
 };
 
 const STATUS_COLOR: Record<RentStatusValue, string> = {
@@ -33,6 +34,7 @@ const STATUS_COLOR: Record<RentStatusValue, string> = {
   late: "text-amber-700 bg-amber-50",
   delinquent: "text-[#B23A2E] bg-red-100",
   partial: "text-amber-700 bg-amber-50",
+  returned_payment: "text-amber-800 bg-amber-100",
 };
 
 export function DetailSheet({ propertyId, currentMonth, currentYear, onClose }: Props) {
