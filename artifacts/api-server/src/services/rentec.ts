@@ -839,6 +839,36 @@ const LATE_FEE_DAY = 11; // late fees post on the 11th of the month
 const LATE_FEE_AMOUNT = 75; // flat late fee once past the grace period
 const DELINQUENT_DAYS = 30; // 30+ days past due → delinquent
 
+/**
+ * Tenants whose rent is due on a day other than the 1st (from the TenantCloud
+ * roster, column H). Keyed by ADDRESS, not tenant name — the address is the
+ * stable identifier (a name can be ambiguous or shared across leases). Matching
+ * is tolerant of the street-type token (Ave/St) and anchored on the house
+ * number + street name (+ direction), so it works whether Rentec stores
+ * "1034 Prospect SW" or "1034 Prospect Ave SW". Everyone not listed = the 1st
+ * (e.g. 1200 14th St NE / Thomas Kellicker II has no override and stays on the 1st).
+ */
+const DUE_DAY_OVERRIDES: Array<{ num: string; name: string; dir?: string; day: number }> = [
+  { num: "1034", name: "prospect", dir: "sw", day: 23 }, // Rolando Barrios
+  { num: "1615", name: "38th", dir: "nw", day: 25 }, // Charles Anderson
+  { num: "3008", name: "willowrow", dir: "ne", day: 20 }, // Fanny Sauceda
+  { num: "1618", name: "19th", dir: "ne", day: 15 }, // Tom Reed (this lease only)
+];
+
+/** The rent due day (1–31) for a property address; defaults to the 1st. */
+function dueDayForAddress(address: string): number {
+  const tokens = streetKey(address).split(" ").filter(Boolean);
+  if (tokens.length === 0) return 1;
+  const num = tokens[0];
+  for (const o of DUE_DAY_OVERRIDES) {
+    if (num !== o.num) continue;
+    if (!tokens.includes(o.name)) continue;
+    if (o.dir && !tokens.includes(o.dir)) continue;
+    return o.day;
+  }
+  return 1;
+}
+
 function round2(x: number): number {
   return Math.round(x * 100) / 100;
 }
@@ -878,16 +908,8 @@ export async function getRentStatus(
 
   const now = new Date();
   const isCurrentMonth = now.getMonth() + 1 === month && now.getFullYear() === year;
-  const billingStart = new Date(year, month - 1, 1);
   // For the current month, age from today; for a past month, age from its 1st.
   const asOf = isCurrentMonth ? Date.now() : new Date(year, month, 1).getTime();
-  const dayOfMonth = isCurrentMonth ? now.getDate() : 31;
-  const daysSinceFirst = Math.max(
-    0,
-    Math.floor((asOf - billingStart.getTime()) / (24 * 60 * 60 * 1000)),
-  );
-  // Late fees only apply once we are on/after the 11th of the billing month.
-  const pastGrace = dayOfMonth > GRACE_DAYS;
   void LATE_FEE_DAY;
 
   const rows: DLRentRow[] = [];
@@ -938,7 +960,27 @@ export async function getRentStatus(
     // $1,000 against $850 rent) must read as "paid", not delinquent.
     const rentecBalance = lease.outstandingBalance ?? 0;
     const outstanding = rentecBalance < 0 ? -rentecBalance : 0; // dollars owed
-    const owesNothing = outstanding <= 0.005;
+
+    // Rent due day for THIS property (most are the 1st; a few are later). The
+    // monthly charge posts on the 1st, but it isn't PAST-DUE until the due day
+    // passes — so in the current month, before the due day, this month's charge
+    // is excluded from what's actionable: the tenant isn't late and shouldn't be
+    // chased yet (e.g. Tom Reed, due the 15th, who pays on the 11th–12th).
+    const dueDay = dueDayForAddress(address);
+    const dueDate = new Date(year, month - 1, dueDay);
+    const thisMonthDueYet = !isCurrentMonth || now.getDate() >= dueDay;
+    const pastDueOwed = thisMonthDueYet
+      ? outstanding
+      : Math.max(0, outstanding - monthlyRent);
+    const owesNothing = pastDueOwed <= 0.005;
+
+    // Grace runs GRACE_DAYS past the due day; late fees begin only after that.
+    const pastGrace = isCurrentMonth ? now.getDate() > dueDay + GRACE_DAYS : true;
+    // Days since this month's rent became due (0 before the due day).
+    const daysSinceDue = Math.max(
+      0,
+      Math.floor((asOf - dueDate.getTime()) / (24 * 60 * 60 * 1000)),
+    );
 
     const startMatch = lease.start?.match(/^(\d{4})-(\d{2})/);
     const startedThisMonthOrLater = startMatch
@@ -949,15 +991,16 @@ export async function getRentStatus(
         })()
       : false;
 
-    // How many billing cycles is the balance behind? Used to age the debt so a
-    // single missed month is "unpaid" but anything 30+ days old is delinquent.
+    // How many billing cycles is the PAST-DUE balance behind? Used to age the
+    // debt so a single missed month is "unpaid" but anything 30+ days old is
+    // delinquent. A not-yet-due current month is already excluded via pastDueOwed.
     const monthsBehind =
-      monthlyRent > 0 ? Math.max(1, Math.round(outstanding / monthlyRent)) : 1;
-    const oldestUnpaid = new Date(year, month - 1 - (monthsBehind - 1), 1);
+      monthlyRent > 0 ? Math.max(1, Math.round(pastDueOwed / monthlyRent)) : 1;
+    const oldestUnpaid = new Date(year, month - 1 - (monthsBehind - 1), dueDay);
     const ageDays = owesNothing
       ? 0
       : Math.max(
-          daysSinceFirst,
+          daysSinceDue,
           Math.floor((asOf - oldestUnpaid.getTime()) / (24 * 60 * 60 * 1000)),
         );
 
@@ -965,13 +1008,13 @@ export async function getRentStatus(
     let daysOverdue = 0;
 
     if (owesNothing) {
-      // Rentec says nothing is owed for this lease (paid, prepaid, or credit).
+      // Nothing past-due: paid, prepaid, credit, or this month not due yet.
       status = "paid";
       daysOverdue = 0;
     } else if (startedThisMonthOrLater) {
       // Brand-new lease that owes its first month — unpaid, not yet aged.
       status = "unpaid";
-      daysOverdue = daysSinceFirst;
+      daysOverdue = daysSinceDue;
     } else if (ageDays >= DELINQUENT_DAYS) {
       status = "delinquent";
       daysOverdue = ageDays;
@@ -983,13 +1026,13 @@ export async function getRentStatus(
 
     // What's been paid toward THIS month's rent (so the bar tracks the current
     // cycle and "resets" each month): full rent when current, otherwise rent
-    // minus the portion of the balance attributable to this month.
-    const thisMonthOwed = Math.min(outstanding, monthlyRent);
+    // minus the past-due portion attributable to this month.
+    const thisMonthOwed = Math.min(pastDueOwed, monthlyRent);
     const amountPaid =
       monthlyRent > 0 ? Math.max(0, monthlyRent - thisMonthOwed) : 0;
 
-    // Late fee accrues only once past the 10-day grace period (the 11th onward)
-    // and only while the current month's rent is still owed.
+    // Late fee accrues only once past the grace period (due day + grace) and
+    // only while the current month's rent is still owed.
     const lateFeeDue =
       pastGrace && status !== "paid" && thisMonthOwed > 0 ? LATE_FEE_AMOUNT : 0;
 
