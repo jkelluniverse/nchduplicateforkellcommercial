@@ -22,8 +22,10 @@ interface LedgerProperty {
   status: LedgerListStatus;
   daysLate: number;
   hasSituation: boolean;
-  // For an "expected" row: ISO date this month's rent is due (custom due day).
+  // For an "expected" row: ISO due date + the expected payment amount (this
+  // month's rent). The live balance may be $0 if the charge hasn't posted yet.
   expectedDate?: string | null;
+  expectedAmount?: number | null;
 }
 
 interface LedgerLine {
@@ -432,7 +434,9 @@ export default function Properties() {
                   <div className="flex items-center gap-1 shrink-0">
                     <div className="text-right">
                       {isExpected ? (
-                        <div className="text-sm font-bold tabular-nums text-blue-700">{fmtMoney(o)}</div>
+                        <div className="text-sm font-bold tabular-nums text-blue-700">
+                          {fmtMoney((prop.expectedAmount ?? 0) > EPS ? prop.expectedAmount! : o)}
+                        </div>
                       ) : o > EPS ? (
                         <div className="text-sm font-bold tabular-nums text-destructive">{fmtMoney(o)}</div>
                       ) : prop.currentBalance > EPS ? (

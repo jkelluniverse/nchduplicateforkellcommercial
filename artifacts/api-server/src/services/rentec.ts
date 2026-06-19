@@ -856,7 +856,7 @@ const DELINQUENT_DAYS = 30; // 30+ days past due → delinquent
  */
 const DUE_DAY_OVERRIDES: Array<{ num: string; name: string; dir?: string; day: number }> = [
   { num: "1034", name: "prospect", dir: "sw", day: 23 }, // Rolando Barrios
-  { num: "1615", name: "38th", dir: "nw", day: 25 }, // Charles Anderson
+  { num: "1615", name: "38th", dir: "nw", day: 28 }, // Charles Anderson (pays ~28th)
   { num: "3008", name: "willowrow", dir: "ne", day: 20 }, // Fanny Sauceda
   { num: "1618", name: "19th", dir: "ne", day: 15 }, // Tom Reed (this lease only)
 ];
@@ -967,23 +967,32 @@ export async function getRentStatus(
     const rentecBalance = lease.outstandingBalance ?? 0;
     const outstanding = rentecBalance < 0 ? -rentecBalance : 0; // dollars owed
 
-    // Rent due day for THIS property (most are the 1st; a few are later). The
-    // monthly charge posts on the 1st, but it isn't PAST-DUE until the due day
-    // passes — so in the current month, before the due day, this month's charge
-    // is excluded from what's actionable: the tenant isn't late and shouldn't be
-    // chased yet (e.g. Tom Reed, due the 15th, who pays on the 11th–12th).
+    // Rent due day for THIS property. Most tenants are due on the 1st; a few
+    // have a CUSTOM due day later in the month. RentTech posts the monthly rent
+    // charge ~1 day before the due date, so a custom-due-day tenant can have a
+    // $0 balance early in the month (charge not posted yet) yet still be expected
+    // to pay on their scheduled date. We therefore drive "expected" off the known
+    // schedule, not off whether the charge has posted.
     const dueDay = dueDayForAddress(address);
+    const hasCustomDueDay = dueDay !== 1;
     const dueDate = new Date(year, month - 1, dueDay);
-    const thisMonthDueYet = !isCurrentMonth || now.getDate() >= dueDay;
-    const pastDueOwed = thisMonthDueYet
-      ? outstanding
-      : Math.max(0, outstanding - monthlyRent);
+    // Expected window = the run-up to a CUSTOM due day (1st through the due day,
+    // inclusive) in the current month. Standard 1st-of-month tenants have no such
+    // window. Within it, THIS month's rent is "expected", not past-due.
+    const inExpectedWindow =
+      isCurrentMonth && hasCustomDueDay && now.getDate() <= dueDay;
+    // Past-due dollars exclude this month's charge while in the expected window
+    // (only a PRIOR-month balance is actionable then).
+    const pastDueOwed = inExpectedWindow
+      ? Math.max(0, outstanding - monthlyRent)
+      : outstanding;
     const owesPastDue = pastDueOwed > 0.005;
-    // "Upcoming": owes this month's rent, but its due day hasn't arrived yet —
-    // an expected incoming payment, not a past-due balance. (Only possible when
-    // the only thing owed is the not-yet-due current month.)
-    const isUpcoming = !owesPastDue && outstanding > 0.005;
-    const owesNothing = !owesPastDue && !isUpcoming;
+    // A positive Rentec balance is a credit → the tenant is paid ahead.
+    const hasCredit = rentecBalance > 0.005;
+    // Expected = a custom-due-day tenant in their window who is neither paid
+    // ahead nor carrying a prior-month past-due balance. Shown on their scheduled
+    // date REGARDLESS of whether the charge has posted yet.
+    const isUpcoming = inExpectedWindow && !hasCredit && !owesPastDue;
 
     // Grace runs GRACE_DAYS past the due day; late fees begin only after that.
     const pastGrace = isCurrentMonth ? now.getDate() > dueDay + GRACE_DAYS : true;
@@ -1020,12 +1029,12 @@ export async function getRentStatus(
     let expectedDate: string | null = null;
 
     if (isUpcoming) {
-      // Owes this month's rent, but it isn't due yet → expected, not late.
+      // Custom-due-day tenant in the run-up to their date → expected, not late.
       status = "upcoming";
       daysOverdue = 0;
       expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
-    } else if (owesNothing) {
-      // Nothing owed: paid, prepaid, or credit on account.
+    } else if (!owesPastDue) {
+      // Nothing past due: paid, prepaid, or credit on account.
       status = "paid";
       daysOverdue = 0;
     } else if (startedThisMonthOrLater) {
@@ -1042,12 +1051,14 @@ export async function getRentStatus(
     }
 
     // What's been paid toward THIS month's rent (so the bar tracks the current
-    // cycle and "resets" each month). Based on the REAL amount owed this month
-    // (not the due-date-adjusted figure), so an upcoming/not-yet-due tenant who
-    // hasn't paid reads as $0 collected, not as paid.
-    const thisMonthOwed = Math.min(outstanding, monthlyRent);
+    // cycle and "resets" each month). An expected (not-yet-due) tenant reads $0
+    // collected even if their charge hasn't posted, so they never inflate the
+    // collected total or the collection rate.
+    const thisMonthOwed = isUpcoming
+      ? monthlyRent
+      : Math.min(outstanding, monthlyRent);
     const amountPaid =
-      monthlyRent > 0 ? Math.max(0, monthlyRent - thisMonthOwed) : 0;
+      isUpcoming || monthlyRent <= 0 ? 0 : Math.max(0, monthlyRent - thisMonthOwed);
 
     // Late fee accrues only once past the grace period (due day + grace) and
     // only while the current month's rent is actually past due (never upcoming).
