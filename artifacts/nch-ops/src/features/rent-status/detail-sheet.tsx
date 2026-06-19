@@ -25,6 +25,7 @@ const STATUS_LABEL: Record<RentStatusValue, string> = {
   late: "Late",
   delinquent: "Delinquent",
   partial: "Partial",
+  upcoming: "Expected",
   returned_payment: "Returned",
 };
 
@@ -34,6 +35,7 @@ const STATUS_COLOR: Record<RentStatusValue, string> = {
   late: "text-amber-700 bg-amber-50",
   delinquent: "text-[#B23A2E] bg-red-100",
   partial: "text-amber-700 bg-amber-50",
+  upcoming: "text-blue-700 bg-blue-50",
   returned_payment: "text-amber-800 bg-amber-100",
 };
 

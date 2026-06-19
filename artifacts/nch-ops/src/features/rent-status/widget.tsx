@@ -14,6 +14,16 @@ import { ResolveMenu, ResolvedThisMonthSection } from "./resolve";
 
 const NEEDS_ATTENTION_LIMIT = 6;
 
+/** "2026-06-20" → "20th" (ordinal day-of-month for the expected-payment note). */
+function ordinalDay(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = Number(iso.slice(8, 10));
+  if (!d) return "";
+  const v = d % 100;
+  const suffix = v >= 11 && v <= 13 ? "th" : ["th", "st", "nd", "rd"][d % 10] ?? "th";
+  return `${d}${suffix}`;
+}
+
 export function RentStatusWidget() {
   const qc = useQueryClient();
   const [selectedPropertyId, setSelectedPropertyId] = useState<number | null>(null);
@@ -168,6 +178,28 @@ export function RentStatusWidget() {
           {(summary.resolved_count ?? resolvedRows.length) > 0 && (
             <p className="text-[11px] text-muted-foreground -mt-1 px-0.5">
               {summary.resolved_count ?? resolvedRows.length} resolved this month
+            </p>
+          )}
+
+          {/* Expected incoming — owes this month but the (custom) due day hasn't
+              arrived yet; not late, not collected. Lists who and when. */}
+          {(summary.expected?.count ?? 0) > 0 && (
+            <p className="text-[11px] font-medium text-blue-700 -mt-1 px-0.5">
+              🗓 {summary.expected!.count} expected later this month
+              {summary.expected!.total_expected > 0
+                ? ` · ${fmtMoney(summary.expected!.total_expected)}`
+                : ""}
+              {summary.expected!.properties.length > 0 && (
+                <span className="font-normal text-blue-600/90">
+                  {" — "}
+                  {summary.expected!.properties
+                    .map(
+                      (p) =>
+                        `${p.tenant_name ?? p.address} (due ${ordinalDay(p.expected_date)})`,
+                    )
+                    .join(", ")}
+                </span>
+              )}
             </p>
           )}
 

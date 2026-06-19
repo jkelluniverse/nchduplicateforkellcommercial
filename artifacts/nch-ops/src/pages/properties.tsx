@@ -10,7 +10,7 @@ function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem("kc_token")}`, "Content-Type": "application/json" };
 }
 
-type LedgerListStatus = "paid" | "current" | "past_due";
+type LedgerListStatus = "paid" | "current" | "past_due" | "expected";
 
 interface LedgerProperty {
   id: number;
@@ -22,6 +22,8 @@ interface LedgerProperty {
   status: LedgerListStatus;
   daysLate: number;
   hasSituation: boolean;
+  // For an "expected" row: ISO date this month's rent is due (custom due day).
+  expectedDate?: string | null;
 }
 
 interface LedgerLine {
@@ -163,7 +165,7 @@ function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: ()
 }
 
 // ─── Ledger list: sort + filter ─────────────────────────────────────────────
-type BalanceFilter = "all" | "owing" | "paid" | "credit";
+type BalanceFilter = "all" | "owing" | "paid" | "credit" | "expected";
 type SortKey = "balance_desc" | "balance_asc" | "address" | "tenant" | "days_late";
 type Delinquency = "all" | "current" | "1_30" | "30_plus";
 type Tri = "all" | "yes" | "no";
@@ -183,7 +185,17 @@ const STATUS_STYLE: Record<LedgerListStatus, { label: string; cls: string }> = {
   paid: { label: "Paid", cls: "bg-emerald-100 text-emerald-700" },
   current: { label: "Owes", cls: "bg-amber-100 text-amber-700" },
   past_due: { label: "Past due", cls: "bg-destructive/15 text-destructive" },
+  expected: { label: "Expected", cls: "bg-blue-100 text-blue-700" },
 };
+
+/** "2026-06-20" → "Jun 20" for the expected-payment date chip. */
+function fmtExpectedDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return "";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[Number(m[2]) - 1] ?? ""} ${Number(m[3])}`;
+}
 
 export default function Properties() {
   const [search, setSearch] = useState("");
@@ -203,23 +215,26 @@ export default function Properties() {
   });
 
   const balanceCounts = useMemo(() => {
-    let all = 0, owing = 0, paid = 0, credit = 0;
+    let all = 0, owing = 0, paid = 0, credit = 0, expected = 0;
     for (const p of properties) {
       all++;
-      if (owed(p) > EPS) owing++;
+      // Expected (not-yet-due) is its own category — never "has balance".
+      if (p.status === "expected") expected++;
+      else if (owed(p) > EPS) owing++;
       else if (p.currentBalance > EPS) credit++;
       else paid++;
     }
-    return { all, owing, paid, credit };
+    return { all, owing, paid, credit, expected };
   }, [properties]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const matchBalance = (p: LedgerProperty) =>
       balance === "all" ||
-      (balance === "owing" && owed(p) > EPS) ||
-      (balance === "paid" && Math.abs(p.currentBalance) <= EPS) ||
-      (balance === "credit" && p.currentBalance > EPS);
+      (balance === "owing" && p.status !== "expected" && owed(p) > EPS) ||
+      (balance === "paid" && p.status !== "expected" && Math.abs(p.currentBalance) <= EPS) ||
+      (balance === "credit" && p.status !== "expected" && p.currentBalance > EPS) ||
+      (balance === "expected" && p.status === "expected");
     const matchDelinq = (p: LedgerProperty) =>
       delinquency === "all" ||
       (delinquency === "current" && p.daysLate === 0) ||
@@ -271,6 +286,10 @@ export default function Properties() {
     { key: "owing", label: "Has balance", count: balanceCounts.owing },
     { key: "paid", label: "Paid up", count: balanceCounts.paid },
     { key: "credit", label: "Credit", count: balanceCounts.credit },
+    // Only surface the Expected tab when something is actually upcoming.
+    ...(balanceCounts.expected > 0
+      ? [{ key: "expected" as BalanceFilter, label: "Expected", count: balanceCounts.expected }]
+      : []),
     { key: "all", label: "All", count: balanceCounts.all },
   ];
 
@@ -289,7 +308,11 @@ export default function Properties() {
         </div>
 
         {/* Balance segmented toggle with live counts */}
-        <div className="grid grid-cols-4 gap-1 bg-primary-foreground/15 rounded-xl p-1 text-xs">
+        <div
+          className={`grid gap-1 bg-primary-foreground/15 rounded-xl p-1 text-xs ${
+            segments.length === 5 ? "grid-cols-5" : "grid-cols-4"
+          }`}
+        >
           {segments.map((s) => (
             <button
               key={s.key}
@@ -374,6 +397,7 @@ export default function Properties() {
           filtered.map((prop) => {
             const o = owed(prop);
             const st = STATUS_STYLE[prop.status];
+            const isExpected = prop.status === "expected";
             return (
               <Card
                 key={prop.id}
@@ -390,6 +414,11 @@ export default function Properties() {
                       <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${st.cls}`}>
                         {st.label}
                       </span>
+                      {isExpected && prop.expectedDate && (
+                        <span className="text-[10px] font-semibold text-blue-700">
+                          due {fmtExpectedDate(prop.expectedDate)}
+                        </span>
+                      )}
                       {prop.daysLate > 0 && (
                         <span className="text-[10px] font-semibold text-destructive">{prop.daysLate}d late</span>
                       )}
@@ -402,7 +431,9 @@ export default function Properties() {
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <div className="text-right">
-                      {o > EPS ? (
+                      {isExpected ? (
+                        <div className="text-sm font-bold tabular-nums text-blue-700">{fmtMoney(o)}</div>
+                      ) : o > EPS ? (
                         <div className="text-sm font-bold tabular-nums text-destructive">{fmtMoney(o)}</div>
                       ) : prop.currentBalance > EPS ? (
                         <div className="text-sm font-bold tabular-nums text-emerald-600">{fmtMoney(prop.currentBalance)}</div>
@@ -410,7 +441,7 @@ export default function Properties() {
                         <div className="text-sm font-bold tabular-nums text-emerald-600">$0</div>
                       )}
                       <div className="text-[10px] text-muted-foreground">
-                        {o > EPS ? "owed" : prop.currentBalance > EPS ? "credit" : "paid"}
+                        {isExpected ? "expected" : o > EPS ? "owed" : prop.currentBalance > EPS ? "credit" : "paid"}
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-muted-foreground" />

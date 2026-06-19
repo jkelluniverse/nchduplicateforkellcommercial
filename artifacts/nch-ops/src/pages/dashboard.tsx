@@ -96,7 +96,7 @@ export default function Dashboard() {
     query: { enabled: !!user, queryKey: getGetDashboardSummaryQueryKey() },
   });
   const summary = summaryRaw as unknown as {
-    rent?: { live: boolean; source?: string | null; leaseCount: number; propertyCount: number; currentCount: number; pastDueCount: number; delinquentCount: number; pastDueAmount: number; expectedThisMonth?: number; collectedThisMonth?: number; remainingThisMonth?: number };
+    rent?: { live: boolean; source?: string | null; leaseCount: number; propertyCount: number; currentCount: number; pastDueCount: number; delinquentCount: number; expectedCount?: number; expectedThisMonthAmount?: number; pastDueAmount: number; expectedThisMonth?: number; collectedThisMonth?: number; remainingThisMonth?: number };
     overdueTasksCount?: number;
     todaysTasks?: Array<{ id: number; title: string; status: string; priority: string }>;
   } | undefined;
@@ -152,7 +152,11 @@ export default function Dashboard() {
             </div>
           )}
           <p className="text-primary-foreground/70 text-xs mt-2">
-            {isSummaryLoading ? " " : `${rent?.currentCount ?? 0} paid · ${rent?.pastDueCount ?? 0} outstanding`}
+            {isSummaryLoading
+              ? " "
+              : `${rent?.currentCount ?? 0} paid · ${rent?.pastDueCount ?? 0} outstanding${
+                  (rent?.expectedCount ?? 0) > 0 ? ` · ${rent?.expectedCount} expected` : ""
+                }`}
           </p>
         </div>
       </div>

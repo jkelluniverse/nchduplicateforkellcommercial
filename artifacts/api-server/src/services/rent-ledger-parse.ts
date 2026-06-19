@@ -161,6 +161,9 @@ export function parseTrackerRows(
       paymentDate: null,
       status,
       daysOverdue,
+      // The Google Sheet path has no per-tenant due day, so it never produces an
+      // "upcoming"/expected row.
+      expectedDate: null,
     });
     properties.add(address);
   }

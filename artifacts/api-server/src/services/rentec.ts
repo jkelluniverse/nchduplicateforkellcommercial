@@ -819,8 +819,14 @@ export interface DLRentRow {
   lateFeeDue: number;
   lateFeePaid: number;
   paymentDate: string | null;
-  status: "paid" | "unpaid" | "late" | "delinquent" | "partial";
+  status: "paid" | "unpaid" | "late" | "delinquent" | "partial" | "upcoming";
   daysOverdue: number;
+  /**
+   * For an "upcoming" row, the ISO date (yyyy-mm-dd) this month's rent is due —
+   * the tenant owes it but the due day hasn't arrived, so it's an EXPECTED
+   * incoming payment, not a past-due balance. Null for every other status.
+   */
+  expectedDate: string | null;
 }
 
 export interface DLRentStatus {
@@ -972,7 +978,12 @@ export async function getRentStatus(
     const pastDueOwed = thisMonthDueYet
       ? outstanding
       : Math.max(0, outstanding - monthlyRent);
-    const owesNothing = pastDueOwed <= 0.005;
+    const owesPastDue = pastDueOwed > 0.005;
+    // "Upcoming": owes this month's rent, but its due day hasn't arrived yet —
+    // an expected incoming payment, not a past-due balance. (Only possible when
+    // the only thing owed is the not-yet-due current month.)
+    const isUpcoming = !owesPastDue && outstanding > 0.005;
+    const owesNothing = !owesPastDue && !isUpcoming;
 
     // Grace runs GRACE_DAYS past the due day; late fees begin only after that.
     const pastGrace = isCurrentMonth ? now.getDate() > dueDay + GRACE_DAYS : true;
@@ -997,18 +1008,24 @@ export async function getRentStatus(
     const monthsBehind =
       monthlyRent > 0 ? Math.max(1, Math.round(pastDueOwed / monthlyRent)) : 1;
     const oldestUnpaid = new Date(year, month - 1 - (monthsBehind - 1), dueDay);
-    const ageDays = owesNothing
-      ? 0
-      : Math.max(
+    const ageDays = owesPastDue
+      ? Math.max(
           daysSinceDue,
           Math.floor((asOf - oldestUnpaid.getTime()) / (24 * 60 * 60 * 1000)),
-        );
+        )
+      : 0;
 
     let status: DLRentRow["status"];
     let daysOverdue = 0;
+    let expectedDate: string | null = null;
 
-    if (owesNothing) {
-      // Nothing past-due: paid, prepaid, credit, or this month not due yet.
+    if (isUpcoming) {
+      // Owes this month's rent, but it isn't due yet → expected, not late.
+      status = "upcoming";
+      daysOverdue = 0;
+      expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
+    } else if (owesNothing) {
+      // Nothing owed: paid, prepaid, or credit on account.
       status = "paid";
       daysOverdue = 0;
     } else if (startedThisMonthOrLater) {
@@ -1025,16 +1042,17 @@ export async function getRentStatus(
     }
 
     // What's been paid toward THIS month's rent (so the bar tracks the current
-    // cycle and "resets" each month): full rent when current, otherwise rent
-    // minus the past-due portion attributable to this month.
-    const thisMonthOwed = Math.min(pastDueOwed, monthlyRent);
+    // cycle and "resets" each month). Based on the REAL amount owed this month
+    // (not the due-date-adjusted figure), so an upcoming/not-yet-due tenant who
+    // hasn't paid reads as $0 collected, not as paid.
+    const thisMonthOwed = Math.min(outstanding, monthlyRent);
     const amountPaid =
       monthlyRent > 0 ? Math.max(0, monthlyRent - thisMonthOwed) : 0;
 
     // Late fee accrues only once past the grace period (due day + grace) and
-    // only while the current month's rent is still owed.
+    // only while the current month's rent is actually past due (never upcoming).
     const lateFeeDue =
-      pastGrace && status !== "paid" && thisMonthOwed > 0 ? LATE_FEE_AMOUNT : 0;
+      pastGrace && owesPastDue && thisMonthOwed > 0 ? LATE_FEE_AMOUNT : 0;
 
     rows.push({
       leaseId: lease.id,
@@ -1048,6 +1066,7 @@ export async function getRentStatus(
       paymentDate: null,
       status,
       daysOverdue,
+      expectedDate,
     });
   }
 

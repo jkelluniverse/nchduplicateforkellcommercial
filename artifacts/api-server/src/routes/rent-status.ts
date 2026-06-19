@@ -174,6 +174,8 @@ function mapDoorLoopRow(
     lateFeePaid: r.lateFeePaid,
     paymentDate: r.paymentDate,
     daysOverdue: r.daysOverdue,
+    // ISO due date for an "upcoming" (expected, not-yet-due) row; null otherwise.
+    expectedDate: r.expectedDate ?? null,
     notes: null as string | null,
     // Kept name for output-shape compatibility — value is a Rentec lease id.
     doorloopLeaseId: (r.leaseId as string | null) ?? null,
@@ -190,7 +192,7 @@ function buildSummaryFromDoorLoopRows(
   resolvedCount = 0,
 ) {
   const buckets: Record<RentStatus["status"], typeof rows> = {
-    paid: [], unpaid: [], late: [], delinquent: [], partial: [],
+    paid: [], unpaid: [], late: [], delinquent: [], partial: [], upcoming: [],
   };
   for (const r of rows) buckets[r.status].push(r);
 
@@ -250,6 +252,20 @@ function buildSummaryFromDoorLoopRows(
       avg_days_overdue: avgDaysOverdue,
     },
     partial: { count: buckets.partial.length, total_collected: round2(partialCollected) },
+    // Expected = owes this month's rent but its (custom) due day hasn't arrived
+    // yet. Not past-due, not collected — an expected incoming payment.
+    expected: {
+      count: buckets.upcoming.length,
+      total_expected: round2(buckets.upcoming.reduce((a, r) => a + r.monthlyRent, 0)),
+      properties: buckets.upcoming
+        .map((r) => ({
+          address: r.address,
+          tenant_name: r.tenantName,
+          amount: round2(r.monthlyRent),
+          expected_date: r.expectedDate ?? null,
+        }))
+        .sort((a, b) => (a.expected_date ?? "").localeCompare(b.expected_date ?? "")),
+    },
     total_collected_mtd: round2(totalCollectedMtd),
     total_expected: round2(sumMonthlyRent),
     total_remaining: remainingThisMonth,
@@ -398,6 +414,7 @@ function buildSummaryFromLocal(rows: RentStatus[], month: number, year: number) 
     late: [],
     delinquent: [],
     partial: [],
+    upcoming: [],
   };
   for (const r of rows) buckets[r.status].push(r);
 
@@ -454,6 +471,13 @@ function buildSummaryFromLocal(rows: RentStatus[], month: number, year: number) 
     partial: {
       count: buckets.partial.length,
       total_collected: round2(partialCollected),
+    },
+    // The local table never carries "upcoming" rows (they come only from the
+    // live Rentec snapshot), so this is empty here — kept for shape parity.
+    expected: {
+      count: buckets.upcoming.length,
+      total_expected: round2(buckets.upcoming.reduce((a, r) => a + n(r.monthlyRent), 0)),
+      properties: [] as Array<{ address: string; tenant_name: string | null; amount: number; expected_date: string | null }>,
     },
     total_collected_mtd: round2(totalCollectedMtd),
     total_expected: round2(totalExpected),

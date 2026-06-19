@@ -14,7 +14,11 @@ export const rentStatusTable = pgTable(
     monthlyRent: numeric("monthly_rent", { precision: 12, scale: 2 }).notNull().default("0"),
     month: integer("month").notNull(),
     year: integer("year").notNull(),
-    status: text("status", { enum: ["paid", "unpaid", "late", "delinquent", "partial"] }).notNull().default("unpaid"),
+    // "upcoming" = owes this month's rent but its (custom) due day hasn't
+    // arrived yet — an expected incoming payment, surfaced only by the live
+    // Rentec snapshot (never persisted to this table). text column, so adding
+    // the value is a type-only change with no DB migration.
+    status: text("status", { enum: ["paid", "unpaid", "late", "delinquent", "partial", "upcoming"] }).notNull().default("unpaid"),
     amountPaid: numeric("amount_paid", { precision: 12, scale: 2 }).notNull().default("0"),
     lateFeeDue: numeric("late_fee_due", { precision: 12, scale: 2 }).notNull().default("0"),
     lateFeePaid: numeric("late_fee_paid", { precision: 12, scale: 2 }).notNull().default("0"),

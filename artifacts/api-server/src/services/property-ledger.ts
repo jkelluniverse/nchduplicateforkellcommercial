@@ -181,7 +181,7 @@ export async function getPropertyLedger(
 // data the dashboard already trusts: live lease balances + the same rent-status
 // aging used on the home screen.
 
-export type LedgerListStatus = "paid" | "current" | "past_due";
+export type LedgerListStatus = "paid" | "current" | "past_due" | "expected";
 
 export interface LedgerPropertyRow {
   id: number; // Postgres directory id — opens the per-property statement
@@ -193,6 +193,10 @@ export interface LedgerPropertyRow {
   status: LedgerListStatus;
   daysLate: number; // 0 when not overdue (Rentec rent-status aging)
   hasSituation: boolean; // an open Payment Situation exists for this address
+  // For an "expected" row: ISO date this month's rent is due (custom due day).
+  // The tenant owes it but the due day hasn't arrived — an expected incoming
+  // payment, not a past-due balance. Null for every other status.
+  expectedDate: string | null;
 }
 
 const DELINQUENT_DAYS = 30; // 30+ days past due → past_due (matches rent cycle)
@@ -221,7 +225,10 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
   // outstanding/overdue come from authoritative lease balances; status + aging
   // come from the same rent-status pathway the dashboard uses.
   const balByKey = new Map<string, { outstanding: number; overdue: number }>();
-  const ageByKey = new Map<string, { owes: boolean; daysLate: number }>();
+  const ageByKey = new Map<
+    string,
+    { owes: boolean; daysLate: number; upcoming: boolean; expectedDate: string | null }
+  >();
 
   if (rentec.hasApiKey()) {
     try {
@@ -245,9 +252,16 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
 
       for (const row of status?.rows ?? []) {
         const k = streetKey(row.address);
-        const prev = ageByKey.get(k) ?? { owes: false, daysLate: 0 };
-        prev.owes = prev.owes || row.status !== "paid";
-        prev.daysLate = Math.max(prev.daysLate, row.daysOverdue);
+        const prev =
+          ageByKey.get(k) ?? { owes: false, daysLate: 0, upcoming: false, expectedDate: null };
+        if (row.status === "upcoming") {
+          // Owes this month but not due yet — expected, not past-due.
+          prev.upcoming = true;
+          if (!prev.expectedDate && row.expectedDate) prev.expectedDate = row.expectedDate;
+        } else {
+          prev.owes = prev.owes || row.status !== "paid";
+          prev.daysLate = Math.max(prev.daysLate, row.daysOverdue);
+        }
         ageByKey.set(k, prev);
       }
     } catch {
@@ -264,12 +278,16 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
     const outstanding = bal?.outstanding ?? 0;
     const overdue = bal?.overdue ?? 0;
     const owes = age ? age.owes : outstanding < -0.005;
+    // Expected = owes only the not-yet-due current month (and nothing past due).
+    const isExpected = !owes && (age?.upcoming ?? false);
     const daysLate = owes ? age?.daysLate ?? 0 : 0;
-    const status: LedgerListStatus = !owes
-      ? "paid"
-      : daysLate >= DELINQUENT_DAYS || overdue > 0.005
-        ? "past_due"
-        : "current";
+    const status: LedgerListStatus = isExpected
+      ? "expected"
+      : !owes
+        ? "paid"
+        : daysLate >= DELINQUENT_DAYS || overdue > 0.005
+          ? "past_due"
+          : "current";
     return {
       id: p.id,
       address: p.address,
@@ -280,6 +298,7 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
       status,
       daysLate,
       hasSituation: situationKeys.has(k),
+      expectedDate: isExpected ? age?.expectedDate ?? null : null,
     };
   });
 

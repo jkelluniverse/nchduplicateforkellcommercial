@@ -4,6 +4,7 @@ export type RentStatusValue =
   | "late"
   | "delinquent"
   | "partial"
+  | "upcoming"
   | "returned_payment";
 
 export interface RentSummary {
@@ -16,6 +17,17 @@ export interface RentSummary {
   unpaid: { count: number; total_outstanding: number; late_fees_outstanding: number };
   delinquent: { count: number; total_outstanding: number; avg_days_overdue: number };
   partial: { count: number; total_collected: number };
+  /** Owes this month but the (custom) due day hasn't arrived — expected, not late. */
+  expected?: {
+    count: number;
+    total_expected: number;
+    properties: Array<{
+      address: string;
+      tenant_name: string | null;
+      amount: number;
+      expected_date: string | null;
+    }>;
+  };
   total_collected_mtd: number;
   total_expected: number;
   total_remaining?: number;
@@ -47,6 +59,8 @@ export interface RentRow {
   lateFeePaid: number;
   paymentDate: string | null;
   daysOverdue: number;
+  /** ISO due date for an "upcoming" (expected, not-yet-due) row; null otherwise. */
+  expectedDate?: string | null;
   notes: string | null;
   updatedAt: string;
   // Kept as `doorloopLeaseId` deliberately (target convention).

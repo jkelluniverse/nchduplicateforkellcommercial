@@ -34,6 +34,9 @@ router.get("/dashboard/summary", requireAuth, async (req: AuthRequest, res): Pro
   const pastDueRows = rows.filter((r) => r.status === "unpaid" || r.status === "late" || r.status === "partial" || r.status === "delinquent");
   const delinquentRows = rows.filter((r) => r.status === "delinquent");
   const currentRows = rows.filter((r) => r.status === "paid");
+  // "Expected" = owes this month's rent but its (custom) due day hasn't arrived
+  // yet. Counted separately so it inflates neither paid nor past-due.
+  const expectedRows = rows.filter((r) => r.status === "upcoming");
   // Expected = full rent roll of occupied properties. Collected = rent received
   // this month. Remaining starts at the full roll and shrinks as people pay.
   const expectedThisMonth = rows.reduce((sum, r) => sum + (r.monthlyRent || 0), 0);
@@ -54,6 +57,8 @@ router.get("/dashboard/summary", requireAuth, async (req: AuthRequest, res): Pro
       currentCount: currentRows.length,
       pastDueCount: pastDueRows.length,
       delinquentCount: delinquentRows.length,
+      expectedCount: expectedRows.length,
+      expectedThisMonthAmount: Math.round(expectedRows.reduce((s, r) => s + (r.monthlyRent || 0), 0) * 100) / 100,
       pastDueAmount: Math.round(pastDueAmount * 100) / 100,
       expectedThisMonth: Math.round(expectedThisMonth * 100) / 100,
       collectedThisMonth: Math.round(collectedThisMonth * 100) / 100,
