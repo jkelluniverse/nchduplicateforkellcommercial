@@ -176,6 +176,8 @@ function mapDoorLoopRow(
     daysOverdue: r.daysOverdue,
     // ISO due date for an "upcoming" (expected, not-yet-due) row; null otherwise.
     expectedDate: r.expectedDate ?? null,
+    // Real past-due balance in dollars (ties out to the Ledger's balances).
+    pastDueAmount: r.pastDueAmount ?? 0,
     notes: null as string | null,
     // Kept name for output-shape compatibility — value is a Rentec lease id.
     doorloopLeaseId: (r.leaseId as string | null) ?? null,
@@ -203,15 +205,13 @@ function buildSummaryFromDoorLoopRows(
     + buckets.paid.reduce((a, r) => a + r.lateFeePaid, 0)
     + buckets.partial.reduce((a, r) => a + r.lateFeePaid, 0);
   const partialCollected = buckets.partial.reduce((a, r) => a + r.amountPaid, 0);
-  // Unpaid rows may carry a partial payment — the still-owed amount for the
-  // current month is rent minus whatever has come in so far.
-  const unpaidOutstanding = buckets.unpaid.reduce(
-    (a, r) => a + Math.max(0, r.monthlyRent - r.amountPaid),
-    0,
-  );
+  // Outstanding totals use each row's REAL past-due balance (pastDueAmount), so
+  // the dashboard's Unpaid/Delinquent dollar figures tie out to the Ledger's
+  // actual balances instead of a rent-minus-paid estimate.
+  const unpaidOutstanding = buckets.unpaid.reduce((a, r) => a + (r.pastDueAmount || 0), 0);
   const unpaidLateFees = buckets.unpaid.reduce((a, r) => a + r.lateFeeDue, 0);
   const delinquentOutstanding = buckets.delinquent.reduce(
-    (a, r) => a + Math.max(0, r.monthlyRent - r.amountPaid) + r.lateFeeDue,
+    (a, r) => a + (r.pastDueAmount || 0),
     0,
   );
   const avgDaysOverdue = buckets.delinquent.length

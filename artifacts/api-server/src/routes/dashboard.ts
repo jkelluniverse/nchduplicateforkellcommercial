@@ -41,10 +41,8 @@ router.get("/dashboard/summary", requireAuth, async (req: AuthRequest, res): Pro
   // this month. Remaining starts at the full roll and shrinks as people pay.
   const expectedThisMonth = rows.reduce((sum, r) => sum + (r.monthlyRent || 0), 0);
   const collectedThisMonth = rows.reduce((sum, r) => sum + (r.amountPaid || 0), 0);
-  const pastDueAmount = pastDueRows.reduce(
-    (sum, r) => sum + Math.max(0, (r.monthlyRent || 0) - (r.amountPaid || 0)) + (r.lateFeeDue || 0),
-    0,
-  );
+  // Use each row's real past-due balance so this ties out to the Ledger.
+  const pastDueAmount = pastDueRows.reduce((sum, r) => sum + (r.pastDueAmount || 0), 0);
   const remainingThisMonth = Math.max(0, expectedThisMonth - collectedThisMonth);
 
   res.json({

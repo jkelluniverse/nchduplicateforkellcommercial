@@ -14,6 +14,8 @@ import type { DLRentStatus, DLRentRow } from "./rentec";
 const LATE_FEE_AMOUNT = 75;
 const DELINQUENT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Sub-$100 past-due remainders are treated as paid (carried fees, rent paid).
+const UNPAID_FLOOR = 100;
 
 export function money(v: unknown): number {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -149,6 +151,15 @@ export function parseTrackerRows(
       daysOverdue = daysSinceFirst;
     }
 
+    // Real past-due dollars this month. A sub-$100 remainder is almost always a
+    // carried fee after the rent was paid, so treat it as paid (not unpaid).
+    const pastDueAmount = round2(Math.max(0, rent - appliedPaid));
+    if (pastDueAmount < UNPAID_FLOOR && status !== "delinquent") {
+      status = "paid";
+      daysOverdue = 0;
+      lateFeeDue = 0;
+    }
+
     rows.push({
       leaseId: `${address}::${tenant}`,
       propertyDoorloopId: address,
@@ -161,6 +172,7 @@ export function parseTrackerRows(
       paymentDate: null,
       status,
       daysOverdue,
+      pastDueAmount,
       // The Google Sheet path has no per-tenant due day, so it never produces an
       // "upcoming"/expected row.
       expectedDate: null,

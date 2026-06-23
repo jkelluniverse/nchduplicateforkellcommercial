@@ -61,6 +61,8 @@ export interface RentRow {
   daysOverdue: number;
   /** ISO due date for an "upcoming" (expected, not-yet-due) row; null otherwise. */
   expectedDate?: string | null;
+  /** Real past-due balance in dollars (ties out to the Ledger). */
+  pastDueAmount?: number;
   notes: string | null;
   updatedAt: string;
   // Kept as `doorloopLeaseId` deliberately (target convention).

@@ -827,6 +827,13 @@ export interface DLRentRow {
    * incoming payment, not a past-due balance. Null for every other status.
    */
   expectedDate: string | null;
+  /**
+   * The tenant's ACTUAL past-due balance in dollars (the real Rentec amount
+   * owed, excluding any not-yet-due current-month charge). This is what the
+   * dashboard's Unpaid/Delinquent totals sum, so they tie out to the Ledger's
+   * real balances rather than a rent-minus-paid estimate. 0 when nothing is due.
+   */
+  pastDueAmount: number;
 }
 
 export interface DLRentStatus {
@@ -844,6 +851,11 @@ const GRACE_DAYS = 10; // grace period after the 1st; late fees start the day af
 const LATE_FEE_DAY = 11; // late fees post on the 11th of the month
 const LATE_FEE_AMOUNT = 75; // flat late fee once past the grace period
 const DELINQUENT_DAYS = 30; // 30+ days past due → delinquent
+// A past-due balance under this much is treated as "paid" for flagging purposes
+// (and excluded from the dashboard Unpaid/Delinquent markers + contact list).
+// These are almost always small fees carried over after the rent itself was
+// paid, so chasing them as "unpaid rent" is noise.
+const UNPAID_FLOOR = 100;
 
 /**
  * Tenants whose rent is due on a day other than the 1st (from the TenantCloud
@@ -1033,8 +1045,9 @@ export async function getRentStatus(
       status = "upcoming";
       daysOverdue = 0;
       expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
-    } else if (!owesPastDue) {
-      // Nothing past due: paid, prepaid, or credit on account.
+    } else if (!owesPastDue || pastDueOwed < UNPAID_FLOOR) {
+      // Nothing past due — or only a sub-$100 carried fee (rent itself was paid).
+      // Treated as paid so it never shows up as unpaid/delinquent.
       status = "paid";
       daysOverdue = 0;
     } else if (startedThisMonthOrLater) {
@@ -1078,6 +1091,8 @@ export async function getRentStatus(
       status,
       daysOverdue,
       expectedDate,
+      // Real past-due dollars (excludes any not-yet-due current-month charge).
+      pastDueAmount: round2(pastDueOwed),
     });
   }
 
