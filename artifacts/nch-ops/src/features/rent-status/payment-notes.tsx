@@ -1024,6 +1024,18 @@ const ROW_DOT: Record<string, string> = {
   resolved: "bg-green-500",
 };
 
+/**
+ * A situation whose expected payment lands in a FUTURE month (next month or
+ * later) — an upcoming expected payment, not a current-month collection. These
+ * are grouped and tinted green so they read as future, not actionable now.
+ */
+function isUpcomingSituation(note: TenantNote): boolean {
+  if (note.status !== "open" || !note.expectedPaymentDate) return false;
+  const now = new Date();
+  const curYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return note.expectedPaymentDate.slice(0, 7) > curYm;
+}
+
 /** mm/dd from a Date. */
 function mdShort(d: Date): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
@@ -1040,6 +1052,7 @@ function CompactRow({
 }) {
   const resolved = note.status === "resolved";
   const missed = note.status === "missed_promise";
+  const upcoming = isUpcomingSituation(note);
 
   let dateText: string;
   let dateClass: string;
@@ -1073,7 +1086,7 @@ function CompactRow({
         onClick={onTap}
         className="flex items-center gap-2 py-2.5 text-left flex-1 min-w-0"
       >
-        <span className={`w-2 h-2 rounded-full shrink-0 ${ROW_DOT[note.status] ?? "bg-gray-400"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${upcoming ? "bg-green-500" : ROW_DOT[note.status] ?? "bg-gray-400"}`} />
         <span className={`text-xs tabular-nums w-16 shrink-0 ${dateClass}`}>{dateText}</span>
         <span className="text-sm font-medium truncate flex-1 min-w-0">
           {shortAddress(note.propertyAddress)}
@@ -1171,13 +1184,17 @@ export function PaymentSituationsSection() {
   const openDated = notes
     .filter((n) => n.status === "open" && n.expectedPaymentDate)
     .sort((a, b) => (a.expectedPaymentDate ?? "").localeCompare(b.expectedPaymentDate ?? ""));
+  // Future-month situations are split off into their own green "Upcoming" group.
+  const upcomingDated = openDated.filter(isUpcomingSituation);
+  const currentDated = openDated.filter((n) => !isUpcomingSituation(n));
   const openNoDate = notes.filter((n) => n.status === "open" && !n.expectedPaymentDate);
   const resolvedNotes = notes
     .filter((n) => n.status === "resolved")
     .sort((a, b) => (b.resolvedAt ?? "").localeCompare(a.resolvedAt ?? ""));
 
-  const activeRows = [...missedNotes, ...openDated, ...openNoDate];
-  const openCount = activeRows.length;
+  const currentRows = [...missedNotes, ...currentDated, ...openNoDate];
+  const upcomingRows = upcomingDated;
+  const openCount = currentRows.length + upcomingRows.length;
   const hasNotes = notes.length > 0;
 
   if (!hasNotes && !isJacob) return null;
@@ -1208,15 +1225,38 @@ export function PaymentSituationsSection() {
       {openCount === 0 && resolvedNotes.length === 0 ? (
         <p className="text-sm text-muted-foreground px-0.5 py-1">No active payment situations</p>
       ) : (
-        <div className="divide-y divide-border">
-          {activeRows.map((n) => (
-            <CompactRow
-              key={n.id}
-              note={n}
-              onTap={() => setSelectedNoteId(n.id)}
-              onRemind={handleRemind}
-            />
-          ))}
+        <div>
+          {currentRows.length > 0 && (
+            <div className="divide-y divide-border">
+              {currentRows.map((n) => (
+                <CompactRow
+                  key={n.id}
+                  note={n}
+                  onTap={() => setSelectedNoteId(n.id)}
+                  onRemind={handleRemind}
+                />
+              ))}
+            </div>
+          )}
+
+          {upcomingRows.length > 0 && (
+            <div className="pt-1">
+              <div className="flex items-center gap-1.5 py-2 px-0.5">
+                <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+                <span className="text-xs font-semibold text-green-700">Upcoming · next month</span>
+              </div>
+              <div className="divide-y divide-border">
+                {upcomingRows.map((n) => (
+                  <CompactRow
+                    key={n.id}
+                    note={n}
+                    onTap={() => setSelectedNoteId(n.id)}
+                    onRemind={handleRemind}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
           {openCount === 0 && (
             <p className="text-sm text-muted-foreground px-0.5 py-2">No active payment situations</p>
