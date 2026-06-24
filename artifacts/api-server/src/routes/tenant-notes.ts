@@ -246,8 +246,17 @@ async function assessSituation(note: TenantPaymentNote): Promise<LedgerAssessmen
   const hasPayment = act.payments.length > 0;
   const balance = led.currentBalance;
 
+  // A situation whose expected payment date is still in the FUTURE can't be
+  // "paid in full" yet — Rentec/RentTech posts the rent charge only ~1 day
+  // before the due date, so a $0 balance before then just means the charge
+  // hasn't posted, not that it's been paid. Don't auto-resolve those.
+  const today = new Date().toISOString().split("T")[0];
+  const expectedInFuture =
+    !!note.expectedPaymentDate && note.expectedPaymentDate > today;
+
   // Paid in full → resolve. Treat a residual ≤ $0.50 as fully paid (rounding).
-  if (balance <= 0.5) {
+  // Skipped while the expected date is in the future (charge not posted yet).
+  if (balance <= 0.5 && !expectedInFuture) {
     if (note.status !== "resolved") {
       await db
         .update(tenantPaymentNotesTable)
