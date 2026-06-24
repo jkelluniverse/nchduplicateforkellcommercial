@@ -6,6 +6,11 @@
   "background_color": "#ffffff",
   "theme_color": "#B23A2E",
   "description": "Kell Commercial Leasing — payment tracking",
+  "share_target": {
+    "action": "/tasks",
+    "method": "GET",
+    "params": { "title": "title", "text": "text", "url": "url" }
+  },
   "icons": [
     {
       "src": "/assets/kellcommercial-192.png",

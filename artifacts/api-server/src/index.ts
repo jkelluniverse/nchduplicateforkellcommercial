@@ -5,6 +5,7 @@ import { initSocket } from "./lib/socket";
 import { ensureMonthRows } from "./routes/rent-status";
 import { runDailyReminders } from "./routes/tenant-notes";
 import { sendFollowUpReminder } from "./routes/contact-checklist";
+import { runFollowupNudgeIfDue } from "./lib/followup-nudge";
 import { syncDirectory } from "./lib/directory-sync";
 import { seedDirectoryFromContacts } from "./lib/directory-seed";
 import { db, usersTable, pool } from "@workspace/db";
@@ -114,6 +115,32 @@ async function createTenantNoteTables() {
   }
 }
 
+async function createFollowupTables() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS task_followup (
+        task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        needs_followup BOOLEAN NOT NULL DEFAULT true,
+        snooze_until TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    logger.info("task_followup + app_settings tables ensured");
+  } catch (err) {
+    logger.error({ err }, "Failed to create follow-up tables");
+  } finally {
+    client.release();
+  }
+}
+
 async function seedUsers() {
   // Single operator login for Kell Commercial. Credentials come from the
   // environment so no personal password ever lives in source/git history.
@@ -197,6 +224,9 @@ server.listen(port, () => {
   // Ensure tenant note tables exist (idempotent).
   void createTenantNoteTables();
 
+  // Ensure follow-up nudge tables exist (idempotent).
+  void createFollowupTables();
+
   // Create the properties table + seed the operator login (idempotent).
   void (async () => {
     try {
@@ -255,6 +285,9 @@ server.listen(port, () => {
     void sendFollowUpReminder();
     setInterval(() => { void sendFollowUpReminder(); }, 24 * 60 * 60 * 1000);
   }, msUntilNext9AM());
+
+  // Open-loops daily nudge — minute tick fires once at the configured time.
+  setInterval(() => { void runFollowupNudgeIfDue(); }, 60_000);
 
   // Populate the directory from the curated contact seed (idempotent,
   // non-destructive), then run the Rentec directory sync on startup and every

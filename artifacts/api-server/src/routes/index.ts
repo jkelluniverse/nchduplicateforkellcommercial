@@ -12,6 +12,7 @@ import rentecRouter from "./rentec";
 import tenantNotesRouter from "./tenant-notes";
 import collectionRouter from "./collection";
 import contactChecklistRouter from "./contact-checklist";
+import followupRouter from "./followup";
 
 const router: IRouter = Router();
 
@@ -28,5 +29,6 @@ router.use(rentecRouter);
 router.use(tenantNotesRouter);
 router.use(collectionRouter);
 router.use(contactChecklistRouter);
+router.use(followupRouter);
 
 export default router;

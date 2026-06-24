@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/select";
 import { Plus, ChevronDown, ChevronUp, Check, Trash2, X, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
+import { OpenLoops } from "@/features/followup/open-loops";
 
 type Role = "jack" | "jacob" | "mike";
 type Priority = "urgent" | "normal" | "low";
@@ -162,6 +163,7 @@ export default function Tasks() {
 
       {/* Body */}
       <div className="p-4 space-y-4">
+        <OpenLoops />
         {isLoading ? (
           <>
             <Skeleton className="h-24 w-full" />
