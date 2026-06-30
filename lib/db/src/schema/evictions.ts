@@ -49,6 +49,11 @@ export const evictionDocumentsTable = pgTable("eviction_documents", {
   documentType: text("document_type").notNull(), // notice_3day | notice_10day | account_balance | court_filing | summons | judgment | other
   driveUrl: text("drive_url"),
   driveFileId: text("drive_file_id"),
+  // The file's own bytes (base64 data URL) + mime, stored in the DB so the
+  // document is never lost and can be previewed/served by the app itself —
+  // independent of Google Drive (Drive is a best-effort convenience copy).
+  fileData: text("file_data"),
+  mimeType: text("mime_type"),
   // Proof-of-service: the exact moment the photo was captured/posted.
   postedAt: timestamp("posted_at", { withTimezone: true }),
   uploadedAt: timestamp("uploaded_at", { withTimezone: true }).notNull().defaultNow(),

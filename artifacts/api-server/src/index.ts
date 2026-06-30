@@ -188,6 +188,8 @@ async function createEvictionTables() {
       )
     `);
     await client.query(`ALTER TABLE eviction_documents ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE eviction_documents ADD COLUMN IF NOT EXISTS file_data TEXT`);
+    await client.query(`ALTER TABLE eviction_documents ADD COLUMN IF NOT EXISTS mime_type TEXT`);
     await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS notice_expiry_date DATE`);
     await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS notice_period_expired BOOLEAN DEFAULT FALSE`);
     await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS attorney_sent_at TIMESTAMPTZ`);

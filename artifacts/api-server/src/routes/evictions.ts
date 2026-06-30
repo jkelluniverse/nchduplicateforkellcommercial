@@ -5,7 +5,7 @@
  * Jacob write off uncollectible balances. Mutations are jacob-only.
  */
 import { Router, type IRouter } from "express";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import {
   db,
   evictionCasesTable,
@@ -238,11 +238,28 @@ router.get("/evictions/:id", requireAuth, async (req, res): Promise<void> => {
   const [c] = await db.select().from(evictionCasesTable).where(eq(evictionCasesTable.id, id));
   if (!c) { res.status(404).json({ error: "Case not found" }); return; }
   const timeline = await db.select().from(evictionTimelineTable).where(eq(evictionTimelineTable.evictionCaseId, id)).orderBy(evictionTimelineTable.stageDate);
-  const documents = await db.select().from(evictionDocumentsTable).where(eq(evictionDocumentsTable.evictionCaseId, id)).orderBy(desc(evictionDocumentsTable.uploadedAt));
+  // Select metadata only — never the (potentially large) file_data bytes here;
+  // expose a hasContent flag so the UI knows it can preview via the content route.
+  const documents = await db
+    .select({
+      id: evictionDocumentsTable.id,
+      documentName: evictionDocumentsTable.documentName,
+      documentType: evictionDocumentsTable.documentType,
+      driveUrl: evictionDocumentsTable.driveUrl,
+      driveFileId: evictionDocumentsTable.driveFileId,
+      mimeType: evictionDocumentsTable.mimeType,
+      hasContent: sql<boolean>`(${evictionDocumentsTable.fileData} IS NOT NULL)`,
+      postedAt: evictionDocumentsTable.postedAt,
+      uploadedAt: evictionDocumentsTable.uploadedAt,
+      notes: evictionDocumentsTable.notes,
+    })
+    .from(evictionDocumentsTable)
+    .where(eq(evictionDocumentsTable.evictionCaseId, id))
+    .orderBy(desc(evictionDocumentsTable.uploadedAt));
   res.json({
     case: serializeCase(c),
     timeline: timeline.map((t) => ({ id: t.id, stage: t.stage, stageDate: t.stageDate ? t.stageDate.toISOString() : null, notes: t.notes })),
-    documents: documents.map((d) => ({ id: d.id, documentName: d.documentName, documentType: d.documentType, driveUrl: d.driveUrl, driveFileId: d.driveFileId, postedAt: d.postedAt ? d.postedAt.toISOString() : null, uploadedAt: d.uploadedAt ? d.uploadedAt.toISOString() : null, notes: d.notes })),
+    documents: documents.map((d) => ({ id: d.id, documentName: d.documentName, documentType: d.documentType, driveUrl: d.driveUrl, driveFileId: d.driveFileId, mimeType: d.mimeType, hasContent: Boolean(d.hasContent), postedAt: d.postedAt ? d.postedAt.toISOString() : null, uploadedAt: d.uploadedAt ? d.uploadedAt.toISOString() : null, notes: d.notes })),
   });
 });
 
@@ -380,6 +397,10 @@ router.post("/evictions/:id/documents", requireAuth, async (req: AuthRequest, re
   if (!fileBase64) { res.status(400).json({ error: "File is required" }); return; }
 
   const postedAt = b.postedAt ? new Date(String(b.postedAt)) : null;
+  // Always persist the file's own bytes in the DB so it can never be lost and the
+  // app can preview/serve it directly (independent of Drive).
+  const mimeMatch = fileBase64.match(/^data:([^;]+);base64,/);
+  const mimeType = mimeMatch ? mimeMatch[1] : null;
   let driveUrl: string | null = null;
   let driveFileId: string | null = null;
   try {
@@ -388,10 +409,11 @@ router.post("/evictions/:id/documents", requireAuth, async (req: AuthRequest, re
     const m = driveUrl ? /\/d\/([^/]+)/.exec(driveUrl) : null;
     driveFileId = m ? m[1] : null;
   } catch (err) {
-    logger.warn({ err }, "eviction doc upload to Drive failed");
+    logger.warn({ err }, "eviction doc upload to Drive failed (kept in DB)");
   }
   const [doc] = await db.insert(evictionDocumentsTable).values({
     evictionCaseId: id, documentName, documentType, driveUrl, driveFileId, postedAt,
+    fileData: fileBase64, mimeType,
     uploadedBy: req.user?.username ?? "jacob", notes: (b.notes as string) || null,
   }).returning();
 
@@ -407,6 +429,36 @@ router.post("/evictions/:id/documents", requireAuth, async (req: AuthRequest, re
     await addTimeline(id, c.status, `Notice posted on door — photo captured as proof of service ${ts}`.trim(), req.user?.username ?? "jacob");
   }
   res.status(201).json({ id: doc.id, driveUrl, driveFileId });
+});
+
+// GET /api/evictions/:id/documents/:docId/content — the file itself, for inline
+// preview/download. Served from the DB (base64 data URL); falls back to Drive
+// for older docs that predate DB storage.
+router.get("/evictions/:id/documents/:docId/content", requireAuth, async (req, res): Promise<void> => {
+  const id = parseInt(String(req.params.id), 10);
+  const docId = parseInt(String(req.params.docId), 10);
+  if (!id || !docId || isNaN(id) || isNaN(docId)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const [doc] = await db.select().from(evictionDocumentsTable).where(and(eq(evictionDocumentsTable.id, docId), eq(evictionDocumentsTable.evictionCaseId, id)));
+  if (!doc) { res.status(404).json({ error: "Document not found" }); return; }
+
+  let dataUrl = doc.fileData ?? null;
+  let mime = doc.mimeType ?? null;
+  // Legacy fallback: pull the bytes from Drive if we never stored them locally.
+  if (!dataUrl && doc.driveFileId) {
+    try {
+      const meta = await getFileMetadata(doc.driveFileId);
+      mime = meta.mimeType || mime || "application/octet-stream";
+      const raw = await getRawFileContent(doc.driveFileId, mime);
+      if (raw?.buffer) {
+        mime = raw.contentType || mime;
+        dataUrl = `data:${mime};base64,${raw.buffer.toString("base64")}`;
+      }
+    } catch (err) {
+      logger.warn({ err, docId }, "eviction doc Drive content fetch failed");
+    }
+  }
+  if (!dataUrl) { res.status(404).json({ error: "No stored content for this document" }); return; }
+  res.json({ documentName: doc.documentName, mimeType: mime, fileBase64: dataUrl });
 });
 
 // DELETE /api/evictions/:id/documents/:docId — remove a document/photo/file.

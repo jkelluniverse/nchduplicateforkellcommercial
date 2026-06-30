@@ -79,7 +79,12 @@ export function sendAttorney(id: number): Promise<{ ok: true; sentAt: string }> 
   return api(`/evictions/${id}/send-attorney`, { method: "POST" });
 }
 export interface TimelineEntry { id: number; stage: string; stageDate: string | null; notes: string | null }
-export interface CaseDocument { id: number; documentName: string; documentType: string; driveUrl: string | null; driveFileId?: string | null; postedAt?: string | null; uploadedAt: string | null }
+export interface CaseDocument { id: number; documentName: string; documentType: string; driveUrl: string | null; driveFileId?: string | null; mimeType?: string | null; hasContent?: boolean; postedAt?: string | null; uploadedAt: string | null }
+
+/** The document's own bytes (base64 data URL) for inline preview / download. */
+export function documentContent(caseId: number, docId: number): Promise<{ documentName: string; mimeType: string | null; fileBase64: string }> {
+  return api(`/evictions/${caseId}/documents/${docId}/content`);
+}
 
 export const evictionsKey = ["evictions"] as const;
 export const evictionKey = (id: number) => ["eviction", id] as const;

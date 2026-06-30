@@ -6,7 +6,7 @@ import { ChevronLeft, Scale, FileText, Upload, X, Printer, Ban, Trash2, Camera, 
 import {
   fetchEviction, advanceStage, writeOffBalance, uploadDocument, accountBalance, hardDeleteCase,
   fetchReady, findContract, sendAttorney, readyKey, deleteDocument, updateEviction,
-  downloadBase64Pdf, fileToBase64, STAGES, evictionKey, evictionsKey,
+  downloadBase64Pdf, fileToBase64, documentContent, STAGES, evictionKey, evictionsKey,
   type TimelineEntry, type CaseDocument, type ReadyStatus, type EvictionCase,
 } from "@/features/evictions/api";
 import { stampPhoto, proofTimestamp, readFileAsDataUrl, driveThumb, driveFull } from "@/features/evictions/stamp";
@@ -46,6 +46,7 @@ export default function EvictionCaseScreen() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [docType, setDocType] = useState("other");
+  const [viewerDoc, setViewerDoc] = useState<CaseDocument | null>(null);
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: evictionKey(caseId) }); void qc.invalidateQueries({ queryKey: evictionsKey }); };
 
@@ -134,14 +135,26 @@ export default function EvictionCaseScreen() {
         <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide mb-2">Case documents</p>
         <div className="space-y-2">
           {data.documents.filter((d) => d.documentType !== "notice_posted").length === 0 && <p className="text-sm text-muted-foreground">No documents yet.</p>}
-          {data.documents.filter((d) => d.documentType !== "notice_posted").map((d: CaseDocument) => (
-            <div key={d.id} className="flex items-center gap-2 rounded-lg border border-border p-2.5">
-              <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
-              <span className="flex-1 text-sm truncate">{d.documentName}</span>
-              {d.driveUrl && <a href={d.driveUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-primary font-semibold">View</a>}
-              <button type="button" onClick={() => { if (confirm("Delete this document?")) deleteDoc.mutate(d.id); }} className="p-1 text-muted-foreground hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
-            </div>
-          ))}
+          {data.documents.filter((d) => d.documentType !== "notice_posted").map((d: CaseDocument) => {
+            const previewable = d.hasContent || !!d.driveFileId || !!d.driveUrl;
+            return (
+              <div key={d.id} className="flex items-center gap-2 rounded-lg border border-border p-2.5">
+                <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
+                <button
+                  type="button"
+                  onClick={() => previewable && setViewerDoc(d)}
+                  disabled={!previewable}
+                  className={`flex-1 text-left text-sm truncate ${previewable ? "" : "text-muted-foreground"}`}
+                >
+                  {d.documentName}
+                </button>
+                {previewable && (
+                  <button type="button" onClick={() => setViewerDoc(d)} className="text-xs text-primary font-semibold shrink-0">Preview</button>
+                )}
+                <button type="button" onClick={() => { if (confirm("Delete this document?")) deleteDoc.mutate(d.id); }} className="p-1 text-muted-foreground hover:text-red-600 shrink-0"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            );
+          })}
         </div>
         {pendingFile ? (
           <div className="mt-2 rounded-lg border border-border p-2.5 space-y-2">
@@ -191,6 +204,41 @@ export default function EvictionCaseScreen() {
 
       {advanceOpen && next && <AdvanceSheet caseId={caseId} current={c.status} next={next} courtDate={c.courtDate} onClose={() => setAdvanceOpen(false)} onDone={() => { setAdvanceOpen(false); invalidate(); }} />}
       {writeOffOpen && <WriteOffSheet caseId={caseId} amount={c.balanceAtFiling ?? 0} onClose={() => setWriteOffOpen(false)} onDone={() => { setWriteOffOpen(false); invalidate(); }} />}
+      {viewerDoc && <DocumentViewer caseId={caseId} doc={viewerDoc} onClose={() => setViewerDoc(null)} />}
+    </div>
+  );
+}
+
+/** Full-screen preview of a case document, served by the app (DB-backed). */
+function DocumentViewer({ caseId, doc, onClose }: { caseId: number; doc: CaseDocument; onClose: () => void }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["eviction-doc-content", caseId, doc.id],
+    queryFn: () => documentContent(caseId, doc.id),
+    staleTime: 5 * 60 * 1000,
+  });
+  const mime = data?.mimeType ?? doc.mimeType ?? "";
+  const isImage = mime.startsWith("image/");
+  const isPdf = mime === "application/pdf";
+  return (
+    <div className="fixed inset-0 z-[95] bg-black/95 flex flex-col">
+      <div className="flex items-center justify-between p-3 gap-2">
+        <span className="text-white text-sm font-semibold truncate">{doc.documentName}</span>
+        <div className="flex items-center gap-3 shrink-0">
+          {data && (
+            <a href={data.fileBase64} download={doc.documentName} className="text-white text-xs font-semibold underline">Download</a>
+          )}
+          <button type="button" onClick={onClose} aria-label="Close"><X className="w-6 h-6 text-white" /></button>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 flex items-center justify-center p-2">
+        {isLoading && <p className="text-white text-sm">Loading…</p>}
+        {isError && <p className="text-white text-sm px-6 text-center">Couldn’t load this document’s file. It may not have been stored.</p>}
+        {data && isImage && <img src={data.fileBase64} alt={doc.documentName} className="max-h-full max-w-full object-contain" />}
+        {data && isPdf && <iframe title={doc.documentName} src={data.fileBase64} className="w-full h-full bg-white rounded" />}
+        {data && !isImage && !isPdf && (
+          <a href={data.fileBase64} download={doc.documentName} className="text-white text-sm underline">Download {doc.documentName}</a>
+        )}
+      </div>
     </div>
   );
 }
