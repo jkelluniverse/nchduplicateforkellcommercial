@@ -942,21 +942,26 @@ export async function uploadBase64ToDrive(
   base64: string,
   filename: string,
   folderPath?: string[],
+  explicitFolderId?: string,
 ): Promise<string | null> {
   try {
     if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
       logger.error({ filename }, "Drive upload failed: GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY not set");
       return null;
     }
-    if (folderPath && !NCH_FOLDER && !ROOT_FOLDER) {
+    if (!explicitFolderId && folderPath && !NCH_FOLDER && !ROOT_FOLDER) {
       logger.error({ filename, folderPath }, "Drive upload failed: NICE_CITY_HOMES_FOLDER_ID not set");
       return null;
     }
 
     const { Readable } = await import("stream");
-    const folderId = folderPath
-      ? await resolveOrCreateNchFolderPath(folderPath)
-      : await resolveOrCreateFolderPath(["Receipts"]);
+    // An explicit folder id (already resolved by the caller) wins — used by the
+    // eviction flow to file documents under its own dedicated Drive folder.
+    const folderId = explicitFolderId
+      ? explicitFolderId
+      : folderPath
+        ? await resolveOrCreateNchFolderPath(folderPath)
+        : await resolveOrCreateFolderPath(["Receipts"]);
     const drive = getWriteDrive();
 
     const mimeMatch = base64.match(/^data:([a-zA-Z0-9+/]+\/[a-zA-Z0-9+/]+);base64,/);

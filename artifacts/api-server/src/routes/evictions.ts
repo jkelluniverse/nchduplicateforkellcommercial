@@ -15,7 +15,7 @@ import {
 } from "@workspace/db";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth";
 import { notifyUser } from "../lib/web-push";
-import { resolveOrCreateFolderPath, uploadFileToDrive, uploadBase64ToDrive, getWriteDrive, getFileMetadata, getRawFileContent } from "../lib/google-drive";
+import { uploadFileToDrive, uploadBase64ToDrive, getWriteDrive, getFileMetadata, getRawFileContent, findOrCreateSubfolder } from "../lib/google-drive";
 import { sendEmailWithAttachments } from "../lib/email";
 import { generateAccountBalance, type AccountBalanceTxn } from "../lib/pdf-generator";
 import { getLeases, getTenantLedger, getCurrentRenterIdForProperty, hasToken } from "../services/rentec";
@@ -33,6 +33,20 @@ const JACOB_EMAIL = process.env.ADMIN_EMAIL || "admin@kellcommercial.com";
 // No default — auto-find is simply disabled until LAND_CONTRACTS_FOLDER_ID is
 // configured for Kell (never point at NCH's folder).
 const LAND_CONTRACTS_FOLDER_ID = process.env.LAND_CONTRACTS_FOLDER_ID || "";
+
+// Dedicated Drive folder for Kell eviction case documents. Defaults to the
+// Kell/Dad's-portfolio folder Jacob placed in the (impersonated) Google account;
+// override with EVICTION_DRIVE_FOLDER_ID. Eviction docs are filed as
+// <this folder>/Evictions/<property address>.
+const EVICTION_DRIVE_FOLDER_ID =
+  process.env.EVICTION_DRIVE_FOLDER_ID || "1Wq0VQOi3Vb57Ij0oHyxljyADapBgr2DY";
+
+/** Resolve (creating if needed) the Drive folder for one property's eviction docs. */
+async function evictionFolderFor(propertyAddress: string): Promise<string> {
+  let cur = await findOrCreateSubfolder(EVICTION_DRIVE_FOLDER_ID, "Evictions");
+  cur = await findOrCreateSubfolder(cur, propertyAddress);
+  return cur;
+}
 
 const OHIO_HOLIDAYS = [
   "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25",
@@ -368,7 +382,8 @@ router.post("/evictions/:id/documents", requireAuth, async (req: AuthRequest, re
   let driveUrl: string | null = null;
   let driveFileId: string | null = null;
   try {
-    driveUrl = await uploadBase64ToDrive(fileBase64, documentName, ["Kell Commercial", "Evictions", c.propertyAddress]);
+    const evFolderId = await evictionFolderFor(c.propertyAddress);
+    driveUrl = await uploadBase64ToDrive(fileBase64, documentName, undefined, evFolderId);
     const m = driveUrl ? /\/d\/([^/]+)/.exec(driveUrl) : null;
     driveFileId = m ? m[1] : null;
   } catch (err) {
@@ -487,7 +502,7 @@ router.get("/evictions/:id/account-balance", requireAuth, async (req, res): Prom
     const filename = `Account Balance - ${c.propertyAddress.replace(/[^a-zA-Z0-9 ]/g, "")}_${todayMMDDYYYY()}.pdf`;
     let driveUrl = "";
     try {
-      const folderId = await resolveOrCreateFolderPath(["Kell Commercial", "Evictions", c.propertyAddress]);
+      const folderId = await evictionFolderFor(c.propertyAddress);
       const up = await uploadFileToDrive(localPath, filename, folderId);
       driveUrl = up.webViewLink;
       await db.insert(evictionDocumentsTable).values({
