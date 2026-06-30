@@ -40,7 +40,7 @@ const LAND_CONTRACTS_FOLDER_ID = process.env.LAND_CONTRACTS_FOLDER_ID || "";
 // override with EVICTION_DRIVE_FOLDER_ID. Eviction docs are filed as
 // <this folder>/Evictions/<property address>.
 const EVICTION_DRIVE_FOLDER_ID =
-  process.env.EVICTION_DRIVE_FOLDER_ID || "1Wq0VQOi3Vb57Ij0oHyxljyADapBgr2DY";
+  process.env.EVICTION_DRIVE_FOLDER_ID || "1lPsBZgluvlmOqZOCk1T-zloy2AcayRMJ";
 
 /** Resolve (creating if needed) the Drive folder for one property's eviction docs. */
 async function evictionFolderFor(propertyAddress: string): Promise<string> {
