@@ -928,79 +928,83 @@ function NoteDetailSheet({
           </div>
         </div>
 
-        {/* Jacob-only actions */}
+        {/* Jacob-only actions — all kept inside ONE sticky bar so every button
+            (incl. Mark Delinquent / Begin Eviction) is visible above the nav. */}
         {isJacob && (
           <SheetButtonRow border className="-mx-4 px-4">
-            {note.status === "missed_promise" && (
-              <button
-                type="button"
-                onClick={() => {
-                  sessionStorage.setItem(
-                    "nch_docs_prefill",
-                    JSON.stringify({
-                      docId: "three_day_notice",
-                      fields: {
-                        property_address: note.propertyAddress,
-                        tenant_name: note.tenantName,
-                      },
-                    }),
-                  );
-                  setLocation("/docs");
-                }}
-                className="flex-1 border border-red-200 bg-red-50 text-red-700 rounded-xl py-2.5 text-sm font-semibold"
-              >
-                Send Notice
-              </button>
-            )}
+            <div className="flex flex-col gap-2 w-full">
+              <div className="flex gap-3">
+                {note.status === "missed_promise" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sessionStorage.setItem(
+                        "nch_docs_prefill",
+                        JSON.stringify({
+                          docId: "three_day_notice",
+                          fields: {
+                            property_address: note.propertyAddress,
+                            tenant_name: note.tenantName,
+                          },
+                        }),
+                      );
+                      setLocation("/docs");
+                    }}
+                    className="flex-1 border border-red-200 bg-red-50 text-red-700 rounded-xl py-2.5 text-sm font-semibold"
+                  >
+                    Send Notice
+                  </button>
+                )}
 
-            {note.status !== "resolved" && (
-              <button
-                type="button"
-                onClick={() => resolveMutation.mutate()}
-                disabled={resolveMutation.isPending}
-                className="flex-1 bg-green-600 text-white rounded-xl py-2.5 text-sm font-semibold disabled:opacity-50"
-              >
-                {resolveMutation.isPending ? "Resolving…" : "Mark Resolved"}
-              </button>
-            )}
+                {note.status !== "resolved" && (
+                  <button
+                    type="button"
+                    onClick={() => resolveMutation.mutate()}
+                    disabled={resolveMutation.isPending}
+                    className="flex-1 bg-green-600 text-white rounded-xl py-2.5 text-sm font-semibold disabled:opacity-50"
+                  >
+                    {resolveMutation.isPending ? "Resolving…" : "Mark Resolved"}
+                  </button>
+                )}
 
-            <button
-              type="button"
-              onClick={() => {
-                if (confirm("Delete this note?")) deleteMutation.mutate();
-              }}
-              disabled={deleteMutation.isPending}
-              className="border border-border rounded-xl px-3 py-2.5 text-muted-foreground disabled:opacity-50"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm("Delete this note?")) deleteMutation.mutate();
+                  }}
+                  disabled={deleteMutation.isPending}
+                  className="border border-border rounded-xl px-3 py-2.5 text-muted-foreground disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={markDelinquent.isPending}
+                  onClick={() => markDelinquent.mutate()}
+                  className="flex items-center justify-center gap-1.5 border border-amber-300 text-amber-700 rounded-xl py-2.5 text-sm font-semibold disabled:opacity-50"
+                >
+                  <AlertTriangle className="w-4 h-4" /> {markDelinquent.isPending ? "Marking…" : "Mark Delinquent"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    sessionStorage.setItem("nch_eviction_prefill", JSON.stringify({
+                      propertyAddress: note.propertyAddress,
+                      tenantName: note.tenantName,
+                      doorloopLeaseId: note.doorloopLeaseId ?? "",
+                    }));
+                    setLocation("/evictions");
+                  }}
+                  className="flex items-center justify-center gap-1.5 border border-[#B23A2E]/40 text-[#B23A2E] rounded-xl py-2.5 text-sm font-semibold"
+                >
+                  <Scale className="w-4 h-4" /> Begin Eviction
+                </button>
+              </div>
+            </div>
           </SheetButtonRow>
-        )}
-        {isJacob && (
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              disabled={markDelinquent.isPending}
-              onClick={() => markDelinquent.mutate()}
-              className="flex items-center justify-center gap-1.5 border border-amber-300 text-amber-700 rounded-xl py-2.5 text-sm font-semibold disabled:opacity-50"
-            >
-              <AlertTriangle className="w-4 h-4" /> {markDelinquent.isPending ? "Marking…" : "Mark Delinquent"}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                sessionStorage.setItem("nch_eviction_prefill", JSON.stringify({
-                  propertyAddress: note.propertyAddress,
-                  tenantName: note.tenantName,
-                  doorloopLeaseId: note.doorloopLeaseId ?? "",
-                }));
-                setLocation("/evictions");
-              }}
-              className="flex items-center justify-center gap-1.5 border border-[#B23A2E]/40 text-[#B23A2E] rounded-xl py-2.5 text-sm font-semibold"
-            >
-              <Scale className="w-4 h-4" /> Begin Eviction
-            </button>
-          </div>
         )}
       </div>
     </BottomSheet>

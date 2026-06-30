@@ -27,6 +27,12 @@ const X_AMT   = X_PRICE + COL_PRICE;
 
 const FOOTER_TEXT = "Nice City Homes LLC  ·  330-495-8192  ·  Canton, Ohio  ·  Home Ownership Specialists";
 
+// Kell Commercial company identity for the court-ready account-balance
+// statement. Override COMPANY_STATEMENT_LINE with the exact legal entity line
+// (name · address · phone) for filings.
+const COMPANY_NAME = process.env.COMPANY_NAME || "Kell Commercial Leasing";
+const COMPANY_STATEMENT_LINE = process.env.COMPANY_STATEMENT_LINE || COMPANY_NAME;
+
 export interface LineItem {
   title: string;
   bullets?: string[];
@@ -611,7 +617,7 @@ export async function generateAccountBalance(data: AccountBalanceData): Promise<
     doc.save().font("Helvetica-Bold").fontSize(16).fillColor(PRIMARY_RED)
       .text("ACCOUNT BALANCE STATEMENT", M, y + 6, { width: USABLE, align: "right" }).restore();
     doc.save().font("Helvetica").fontSize(8.5).fillColor("#555555")
-      .text("Nice City Homes LLC · 2202 31st St NE, Canton OH 44705 · 330-495-7821", M, y + 30, { width: USABLE, align: "right" })
+      .text(COMPANY_STATEMENT_LINE, M, y + 30, { width: USABLE, align: "right" })
       .text(`Generated ${data.generated_date} · for court filing purposes`, M, y + 42, { width: USABLE, align: "right" }).restore();
     y += 64;
     drawLine(doc, M, y, M + USABLE, PRIMARY_RED, 1.5);
@@ -671,7 +677,7 @@ export async function generateAccountBalance(data: AccountBalanceData): Promise<
     y += 40;
 
     doc.save().font("Helvetica-Oblique").fontSize(7.5).fillColor("#666666")
-      .text(`This statement was generated from Nice City Homes LLC property management records on ${data.generated_date}.`, M, PG_H - M - 16, { width: USABLE, align: "center" }).restore();
+      .text(`This statement was generated from ${COMPANY_NAME} property management records on ${data.generated_date}.`, M, PG_H - M - 16, { width: USABLE, align: "center" }).restore();
 
     doc.end();
     stream.on("finish", () => resolve(filePath));

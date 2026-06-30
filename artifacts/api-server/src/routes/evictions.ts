@@ -16,6 +16,7 @@ import {
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth";
 import { notifyUser } from "../lib/web-push";
 import { uploadFileToDrive, uploadBase64ToDrive, getWriteDrive, getFileMetadata, getRawFileContent, findOrCreateSubfolder } from "../lib/google-drive";
+import { getPropertyLedger } from "../services/property-ledger";
 import { sendEmailWithAttachments } from "../lib/email";
 import { generateAccountBalance, type AccountBalanceTxn } from "../lib/pdf-generator";
 import { getLeases, getTenantLedger, getCurrentRenterIdForProperty, hasToken } from "../services/rentec";
@@ -443,50 +444,40 @@ router.get("/evictions/:id/account-balance", requireAuth, async (req, res): Prom
   if (!id || isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   const [c] = await db.select().from(evictionCasesTable).where(eq(evictionCasesTable.id, id));
   if (!c) { res.status(404).json({ error: "Case not found" }); return; }
-  if (!hasToken()) { res.status(503).json({ error: "Rentec not configured" }); return; }
 
   try {
-    // Resolve the resident's Rentec renter_id: prefer the lease's own renterId
-    // (looked up by the stored lease id), else the property's current renter.
-    const leaseId = c.doorloopLeaseId;
+    // Best-effort lease dates for the statement header.
     let leaseDates = "";
-    let renterId: string | null = null;
-    if (leaseId) {
+    if (c.doorloopLeaseId && hasToken()) {
       const leases = await getLeases();
-      const lease = leases.find((l) => l.id === leaseId);
-      if (lease) {
-        leaseDates = [lease.start, lease.end].filter(Boolean).join(" – ");
-        renterId = lease.renterId ?? null;
-      }
-    }
-    if (!renterId && c.doorloopPropertyId) {
-      renterId = await getCurrentRenterIdForProperty(c.doorloopPropertyId);
+      const lease = leases.find((l) => l.id === c.doorloopLeaseId);
+      if (lease) leaseDates = [lease.start, lease.end].filter(Boolean).join(" – ");
     }
 
-    // Rentec's tenant ledger gives charges (debit) + payments (credit) as one
-    // signed stream. Map each line to a statement transaction: a debit is a
-    // charge, a credit is a payment. Hidden card-fee noise is excluded from the
-    // court statement. Lines are returned oldest-first; we sort defensively.
-    const ledger = renterId ? await getTenantLedger(renterId) : { lines: [], endingBalance: null };
-
-    type Entry = { date: string; description: string; charge: number; payment: number };
-    const entries: Entry[] = ledger.lines
-      .filter((l) => !l.hidden)
-      .map((l) => ({
-        date: l.date,
-        description: l.description || (l.debit ? "Charge" : "Payment received"),
-        charge: num(l.debit),
-        payment: num(l.credit),
-      }));
-    entries.sort((a, z) => (a.date ?? "").localeCompare(z.date ?? ""));
+    // Use the SAME ledger the app already shows for this address — the court
+    // statement is just a printable copy of that ledger. getPropertyLedger
+    // resolves the property → resident by address and falls back to the Master
+    // Rent Ledger when Rentec has no transactions, so it never comes back empty
+    // when the on-screen ledger has data. Lines are newest-first for display;
+    // a statement reads oldest-first.
+    const statement = await getPropertyLedger(c.propertyAddress, c.tenantName);
+    const ordered = [...statement.lines].reverse();
 
     let running = 0;
-    const txns: AccountBalanceTxn[] = entries.map((e) => {
-      running += e.charge - e.payment;
-      return { date: fmtDate(e.date), description: e.description, charge: e.charge, payment: e.payment, balance: Math.round(running * 100) / 100 };
+    const txns: AccountBalanceTxn[] = ordered.map((l) => {
+      const charge = num(l.debit);
+      const payment = num(l.credit);
+      running += charge - payment;
+      return {
+        date: fmtDate(l.date),
+        description: l.description || (charge ? "Charge" : "Payment received"),
+        charge,
+        payment,
+        balance: Math.round(running * 100) / 100,
+      };
     });
-    const totalCharged = entries.reduce((a, e) => a + e.charge, 0);
-    const totalPaid = entries.reduce((a, e) => a + e.payment, 0);
+    const totalCharged = ordered.reduce((a, l) => a + num(l.debit), 0);
+    const totalPaid = ordered.reduce((a, l) => a + num(l.credit), 0);
 
     const localPath = await generateAccountBalance({
       property_address: c.propertyAddress,
