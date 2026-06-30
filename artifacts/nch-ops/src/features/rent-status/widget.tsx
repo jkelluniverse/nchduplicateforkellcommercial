@@ -1,5 +1,8 @@
 import { useState, useMemo } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Scale } from "lucide-react";
+import { listEvictions, evictionsKey } from "@/features/evictions/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw, History, CircleAlert as AlertCircle } from "lucide-react";
@@ -44,6 +47,15 @@ export function RentStatusWidget() {
 
   const summary = summaryQ.data;
   const rows = detailQ.data ?? [];
+  const [, navigate] = useLocation();
+
+  // Active eviction cases, keyed by normalized address → show ⚖️ on the row.
+  const evictionsQ = useQuery({ queryKey: evictionsKey, queryFn: listEvictions, refetchInterval: 5 * 60 * 1000 });
+  const evictionByAddr = useMemo(() => {
+    const m = new Map<string, { id: number; statusLabel: string; courtDate: string | null; courtTime: string | null }>();
+    for (const c of evictionsQ.data?.active ?? []) m.set(c.propertyAddress.trim().toLowerCase(), c);
+    return m;
+  }, [evictionsQ.data]);
 
   const needsAttention = useMemo<RentRow[]>(
     () => rows.filter((r) => r.status === "delinquent" && r.daysOverdue >= 30 && !r.override),
@@ -241,8 +253,26 @@ export function RentStatusWidget() {
               </div>
             )}
 
+            {/* Active eviction cases — always shown, even if not yet 30+ delinquent */}
+            {(evictionsQ.data?.active ?? [])
+              .filter((c) => !needsAttention.some((r) => r.address.trim().toLowerCase() === c.propertyAddress.trim().toLowerCase()))
+              .map((c) => (
+                <button key={`ev-${c.id}`} type="button" onClick={() => navigate(`/evictions/${c.id}`)}
+                  className="w-full flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-muted/60 text-left">
+                  <Scale className="w-4 h-4 shrink-0 text-[#B23A2E]" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{c.propertyAddress}</p>
+                    <p className="text-xs text-muted-foreground truncate">{c.tenantName}</p>
+                    <p className="text-[10px] font-bold text-[#B23A2E] truncate">
+                      ⚖️ {c.statusLabel}{c.courtDate ? ` · Court ${c.courtDate}${c.courtTime ? ` ${c.courtTime}` : ""}` : ""}
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#B23A2E] shrink-0">View Case</span>
+                </button>
+              ))}
+
             {needsAttention.length === 0 ? (
-              returnedRows.length === 0 ? (
+              returnedRows.length === 0 && (evictionsQ.data?.active ?? []).length === 0 ? (
                 <p className="text-sm text-green-600 px-0.5 py-2">
                   No properties currently 30+ days past due
                 </p>
@@ -250,35 +280,44 @@ export function RentStatusWidget() {
             ) : (
               <>
                 <div className="space-y-1">
-                  {visibleAttention.map((r) => (
+                  {visibleAttention.map((r) => {
+                    const ev = evictionByAddr.get(r.address.trim().toLowerCase());
+                    return (
                     <div
                       key={r.id}
                       className="w-full flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-muted/60 transition-colors"
                     >
                       <button
                         type="button"
-                        onClick={() => setSelectedPropertyId(r.propertyId)}
+                        onClick={() => (ev ? navigate(`/evictions/${ev.id}`) : setSelectedPropertyId(r.propertyId))}
                         className="flex items-center gap-2 flex-1 min-w-0 text-left"
                       >
-                        <span className="w-2 h-2 rounded-full shrink-0 bg-[#B23A2E]" />
+                        {ev
+                          ? <Scale className="w-4 h-4 shrink-0 text-[#B23A2E]" />
+                          : <span className="w-2 h-2 rounded-full shrink-0 bg-[#B23A2E]" />}
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">{r.address}</p>
                           <p className="text-xs text-muted-foreground truncate">
                             {r.tenantName ?? "Unknown tenant"}
                           </p>
+                          {ev && (
+                            <p className="text-[10px] font-bold text-[#B23A2E] truncate">
+                              {ev.statusLabel}{ev.courtDate ? ` · Court ${ev.courtDate}${ev.courtTime ? ` ${ev.courtTime}` : ""}` : ""}
+                            </p>
+                          )}
                         </div>
                         <div className="text-right shrink-0">
                           <p className="text-sm font-semibold">
                             {fmtMoney(r.monthlyRent + r.lateFeeDue)}
                           </p>
                           <p className="text-[10px] font-bold text-[#B23A2E]">
-                            {r.daysOverdue}d over
+                            {ev ? "View Case" : `${r.daysOverdue}d over`}
                           </p>
                         </div>
                       </button>
-                      <ResolveMenu row={r} onChanged={handleRefresh} />
+                      {!ev && <ResolveMenu row={r} onChanged={handleRefresh} />}
                     </div>
-                  ))}
+                  );})}
                 </div>
                 {hiddenCount > 0 && (
                   <button

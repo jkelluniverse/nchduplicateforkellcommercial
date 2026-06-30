@@ -98,6 +98,23 @@ function annotateOverride(
       overrideCreatedAt: null,
     };
   }
+  // Manual-delinquent is not a "resolved" override — force the row to
+  // delinquent (30+ days) and keep override=false so it stays in the buckets
+  // and the Needs Attention list.
+  if (o.overrideStatus === "manual_delinquent") {
+    return {
+      ...row,
+      status: "delinquent" as const,
+      daysOverdue: Math.max(30, row.daysOverdue),
+      doorloopLeaseId: o.doorloopLeaseId ?? row.doorloopLeaseId,
+      override: false,
+      overrideId: o.id,
+      overrideStatus: o.overrideStatus,
+      overrideReason: o.reason,
+      overrideNotes: o.notes,
+      overrideCreatedAt: o.createdAt ? o.createdAt.toISOString() : null,
+    };
+  }
   return {
     ...row,
     doorloopLeaseId: o.doorloopLeaseId ?? row.doorloopLeaseId,

@@ -15,6 +15,8 @@ import More from "@/pages/more";
 import Properties from "@/pages/properties";
 import Settings from "@/pages/settings";
 import Directory from "@/pages/directory";
+import Evictions from "@/pages/evictions";
+import EvictionCaseScreen from "@/pages/eviction-case";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -79,6 +81,18 @@ function Router() {
       <Route path="/more">
         <Layout>
           <ProtectedRoute component={More} />
+        </Layout>
+      </Route>
+
+      <Route path="/evictions">
+        <Layout>
+          <ProtectedRoute component={Evictions} />
+        </Layout>
+      </Route>
+
+      <Route path="/evictions/:id">
+        <Layout>
+          <ProtectedRoute component={EvictionCaseScreen} />
         </Layout>
       </Route>
 

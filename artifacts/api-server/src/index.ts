@@ -3,6 +3,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { initSocket } from "./lib/socket";
 import { ensureMonthRows } from "./routes/rent-status";
+import { runCourtReminders } from "./routes/evictions";
 import { runDailyReminders } from "./routes/tenant-notes";
 import { sendFollowUpReminder } from "./routes/contact-checklist";
 import { runFollowupNudgeIfDue } from "./lib/followup-nudge";
@@ -141,6 +142,77 @@ async function createFollowupTables() {
   }
 }
 
+async function createEvictionTables() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS eviction_cases (
+        id SERIAL PRIMARY KEY,
+        property_address TEXT NOT NULL,
+        tenant_name TEXT NOT NULL,
+        doorloop_lease_id TEXT,
+        doorloop_property_id TEXT,
+        balance_at_filing NUMERIC(10,2),
+        monthly_rent NUMERIC(10,2),
+        balance_written_off NUMERIC(10,2),
+        written_off_at TIMESTAMPTZ,
+        written_off_notes TEXT,
+        status TEXT NOT NULL DEFAULT 'notice_filed',
+        notice_filed_date DATE,
+        notice_type TEXT,
+        court_date DATE,
+        court_time TEXT,
+        court_location TEXT,
+        hearing_outcome TEXT,
+        judgment_date DATE,
+        judgment_notes TEXT,
+        vacated_date DATE,
+        created_by TEXT NOT NULL DEFAULT 'jacob',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        closed_at TIMESTAMPTZ,
+        notes TEXT
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS eviction_documents (
+        id SERIAL PRIMARY KEY,
+        eviction_case_id INTEGER REFERENCES eviction_cases(id) ON DELETE CASCADE,
+        document_name TEXT NOT NULL,
+        document_type TEXT NOT NULL,
+        drive_url TEXT,
+        drive_file_id TEXT,
+        uploaded_at TIMESTAMPTZ DEFAULT NOW(),
+        uploaded_by TEXT NOT NULL DEFAULT 'jacob',
+        notes TEXT
+      )
+    `);
+    await client.query(`ALTER TABLE eviction_documents ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS notice_expiry_date DATE`);
+    await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS notice_period_expired BOOLEAN DEFAULT FALSE`);
+    await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS attorney_sent_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS attorney_sent_by TEXT`);
+    await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS contract_drive_url TEXT`);
+    await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS contract_drive_file_id TEXT`);
+    await client.query(`ALTER TABLE eviction_cases ADD COLUMN IF NOT EXISTS contract_found_at TIMESTAMPTZ`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS eviction_timeline (
+        id SERIAL PRIMARY KEY,
+        eviction_case_id INTEGER REFERENCES eviction_cases(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        stage_date TIMESTAMPTZ DEFAULT NOW(),
+        notes TEXT,
+        created_by TEXT NOT NULL DEFAULT 'jacob'
+      )
+    `);
+    logger.info("eviction tables ensured");
+  } catch (err) {
+    logger.error({ err }, "Failed to ensure eviction tables");
+  } finally {
+    client.release();
+  }
+}
+
 async function seedUsers() {
   // Single operator login for Kell Commercial. Credentials come from the
   // environment so no personal password ever lives in source/git history.
@@ -227,6 +299,9 @@ server.listen(port, () => {
   // Ensure follow-up nudge tables exist (idempotent).
   void createFollowupTables();
 
+  // Ensure eviction tracker tables exist (idempotent).
+  void createEvictionTables();
+
   // Create the properties table + seed the operator login (idempotent).
   void (async () => {
     try {
@@ -269,7 +344,8 @@ server.listen(port, () => {
   };
   setTimeout(() => {
     void runDailyReminders();
-    setInterval(() => { void runDailyReminders(); }, 24 * 60 * 60 * 1000);
+    void runCourtReminders();
+    setInterval(() => { void runDailyReminders(); void runCourtReminders(); }, 24 * 60 * 60 * 1000);
   }, msUntilNext8AM());
 
   // Daily 9 AM communication-checklist follow-up reminder. Self-guards (no-ops

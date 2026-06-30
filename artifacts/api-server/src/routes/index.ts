@@ -13,6 +13,7 @@ import tenantNotesRouter from "./tenant-notes";
 import collectionRouter from "./collection";
 import contactChecklistRouter from "./contact-checklist";
 import followupRouter from "./followup";
+import evictionsRouter from "./evictions";
 
 const router: IRouter = Router();
 
@@ -30,5 +31,6 @@ router.use(tenantNotesRouter);
 router.use(collectionRouter);
 router.use(contactChecklistRouter);
 router.use(followupRouter);
+router.use(evictionsRouter);
 
 export default router;

@@ -15,6 +15,9 @@ export const OVERRIDE_STATUSES = [
   "arrangement",
   "paid_cash",
   "other",
+  // Force a property INTO delinquency (e.g. tenant said outright they won't
+  // pay). Unlike the others this does NOT resolve the row — it surfaces it.
+  "manual_delinquent",
 ] as const;
 
 export type OverrideStatus = (typeof OVERRIDE_STATUSES)[number];

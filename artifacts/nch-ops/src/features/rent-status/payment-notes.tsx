@@ -3,9 +3,10 @@ import { SheetButtonRow } from "@/components/sheet-button-row";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import { useLocation } from "wouter";
-import { Plus, ChevronRight, Trash2, X, MessageSquare, Pencil } from "lucide-react";
+import { Plus, ChevronRight, Trash2, X, MessageSquare, Pencil, Scale, TriangleAlert as AlertTriangle } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
+import { postOverride, rentKeys } from "./api";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -563,6 +564,18 @@ function NoteDetailSheet({
     onSuccess: () => { onChanged(); onClose(); },
   });
 
+  const qc = useQueryClient();
+  const markDelinquent = useMutation({
+    mutationFn: () => postOverride({
+      property_address: note!.propertyAddress,
+      doorloop_lease_id: note!.doorloopLeaseId ?? undefined,
+      override_status: "manual_delinquent",
+      reason: "Tenant stated they will not / cannot pay",
+    }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: rentKeys.all }); toast.success("Marked delinquent"); },
+    onError: () => toast.error("Couldn't update — try again"),
+  });
+
   const [editing, setEditing] = useState(false);
   const [eSituation, setESituation] = useState("");
   const [eDate, setEDate] = useState("");
@@ -962,6 +975,32 @@ function NoteDetailSheet({
               <Trash2 className="w-4 h-4" />
             </button>
           </SheetButtonRow>
+        )}
+        {isJacob && (
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              disabled={markDelinquent.isPending}
+              onClick={() => markDelinquent.mutate()}
+              className="flex items-center justify-center gap-1.5 border border-amber-300 text-amber-700 rounded-xl py-2.5 text-sm font-semibold disabled:opacity-50"
+            >
+              <AlertTriangle className="w-4 h-4" /> {markDelinquent.isPending ? "Marking…" : "Mark Delinquent"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                sessionStorage.setItem("nch_eviction_prefill", JSON.stringify({
+                  propertyAddress: note.propertyAddress,
+                  tenantName: note.tenantName,
+                  doorloopLeaseId: note.doorloopLeaseId ?? "",
+                }));
+                setLocation("/evictions");
+              }}
+              className="flex items-center justify-center gap-1.5 border border-[#B23A2E]/40 text-[#B23A2E] rounded-xl py-2.5 text-sm font-semibold"
+            >
+              <Scale className="w-4 h-4" /> Begin Eviction
+            </button>
+          </div>
         )}
       </div>
     </BottomSheet>
