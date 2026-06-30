@@ -995,9 +995,21 @@ export async function getRentStatus(
       isCurrentMonth && hasCustomDueDay && now.getDate() <= dueDay;
     // Past-due dollars exclude this month's charge while in the expected window
     // (only a PRIOR-month balance is actionable then).
-    const pastDueOwed = inExpectedWindow
-      ? Math.max(0, outstanding - monthlyRent)
-      : outstanding;
+    //
+    // Month-end prebill: RentTech posts NEXT month's rent charge ~1 day before
+    // its due date, so at month end the live balance can already include next
+    // month's rent. That charge isn't due yet, so it must not count as THIS
+    // month's past-due — otherwise a tenant who fully paid this month looks
+    // unpaid (and the collected/remaining totals get distorted). Exclude one
+    // month once the next cycle's charge has posted and there's a full month of
+    // balance to attribute to it.
+    const nextDueDate = new Date(year, month, dueDay); // dueDay of the NEXT month
+    const nextChargePosted =
+      isCurrentMonth && Date.now() >= nextDueDate.getTime() - 24 * 60 * 60 * 1000;
+    const prebilledNext =
+      nextChargePosted && outstanding >= monthlyRent - 0.5 ? monthlyRent : 0;
+    const excludeNotYetDue = (inExpectedWindow ? monthlyRent : 0) + prebilledNext;
+    const pastDueOwed = Math.max(0, outstanding - excludeNotYetDue);
     const owesPastDue = pastDueOwed > 0.005;
     // A positive Rentec balance is a credit → the tenant is paid ahead.
     const hasCredit = rentecBalance > 0.005;
@@ -1064,12 +1076,14 @@ export async function getRentStatus(
     }
 
     // What's been paid toward THIS month's rent (so the bar tracks the current
-    // cycle and "resets" each month). An expected (not-yet-due) tenant reads $0
-    // collected even if their charge hasn't posted, so they never inflate the
-    // collected total or the collection rate.
+    // cycle and "resets" each month). Based on the PAST-DUE owed (which excludes
+    // next month's prebilled charge and a custom due-day's not-yet-due charge),
+    // so a tenant who paid this month reads as collected even when the live
+    // balance carries next month's posted charge. An expected (not-yet-due)
+    // tenant still reads $0 collected.
     const thisMonthOwed = isUpcoming
       ? monthlyRent
-      : Math.min(outstanding, monthlyRent);
+      : Math.min(pastDueOwed, monthlyRent);
     const amountPaid =
       isUpcoming || monthlyRent <= 0 ? 0 : Math.max(0, monthlyRent - thisMonthOwed);
 

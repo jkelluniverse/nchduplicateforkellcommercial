@@ -29,7 +29,10 @@ const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n
 const ATTORNEY_EMAIL = process.env.ATTORNEY_EMAIL || "drew@dgonyiaslaw.com";
 const ATTORNEY_NAME = process.env.ATTORNEY_NAME || "Drew Gonyias";
 const JACOB_EMAIL = process.env.ADMIN_EMAIL || "admin@kellcommercial.com";
-const LAND_CONTRACTS_FOLDER_ID = process.env.LAND_CONTRACTS_FOLDER_ID || "1CoHg391CB9oYUvIfLzSVQlHeG2ImjFMM";
+// Kell's land-contracts Drive folder (for auto-finding a property's contract).
+// No default — auto-find is simply disabled until LAND_CONTRACTS_FOLDER_ID is
+// configured for Kell (never point at NCH's folder).
+const LAND_CONTRACTS_FOLDER_ID = process.env.LAND_CONTRACTS_FOLDER_ID || "";
 
 const OHIO_HOLIDAYS = [
   "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25",
@@ -98,6 +101,7 @@ function noticePeriodStatus(noticeFiledDate: string | null, noticeType: string |
 
 /** Search the Land Contracts Drive folder for a property's contract. */
 async function findContractInDrive(propertyAddress: string): Promise<{ fileId: string; fileName: string; webViewLink: string } | null> {
+  if (!LAND_CONTRACTS_FOLDER_ID) return null; // auto-find disabled until configured
   try {
     const head = propertyAddress.split(",")[0].trim();
     const streetNum = head.split(" ")[0] ?? "";

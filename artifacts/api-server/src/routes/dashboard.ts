@@ -3,6 +3,7 @@ import { sql, gte } from "drizzle-orm";
 import { db, tasksTable, activityTable } from "@workspace/db";
 import { requireAuth, type AuthRequest } from "../middlewares/auth";
 import { getLiveRentStatus } from "../services/rent-source";
+import { getOverrideMap } from "../services/rent-overrides";
 
 const router: IRouter = Router();
 
@@ -30,7 +31,12 @@ router.get("/dashboard/summary", requireAuth, async (req: AuthRequest, res): Pro
   const live = await getLiveRentStatus(now.getMonth() + 1, now.getFullYear());
   const snapshot = live?.data ?? null;
 
-  const rows = snapshot?.rows ?? [];
+  // Exclude manually-resolved (override) properties from the headline counts and
+  // rent roll, exactly as the Rent Collection widget does, so the two agree.
+  const overrides = snapshot
+    ? await getOverrideMap(now.getMonth() + 1, now.getFullYear()).catch(() => new Map())
+    : new Map();
+  const rows = (snapshot?.rows ?? []).filter((r) => !overrides.has(r.address));
   const pastDueRows = rows.filter((r) => r.status === "unpaid" || r.status === "late" || r.status === "partial" || r.status === "delinquent");
   const delinquentRows = rows.filter((r) => r.status === "delinquent");
   const currentRows = rows.filter((r) => r.status === "paid");
