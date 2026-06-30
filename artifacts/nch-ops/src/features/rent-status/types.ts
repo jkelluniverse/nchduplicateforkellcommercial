@@ -1,4 +1,11 @@
-export type RentStatusValue = "paid" | "unpaid" | "late" | "delinquent" | "partial";
+export type RentStatusValue =
+  | "paid"
+  | "unpaid"
+  | "late"
+  | "delinquent"
+  | "partial"
+  | "upcoming"
+  | "returned_payment";
 
 export interface RentSummary {
   month: string;
@@ -10,13 +17,33 @@ export interface RentSummary {
   unpaid: { count: number; total_outstanding: number; late_fees_outstanding: number };
   delinquent: { count: number; total_outstanding: number; avg_days_overdue: number };
   partial: { count: number; total_collected: number };
+  /** Owes this month but the (custom) due day hasn't arrived — expected, not late. */
+  expected?: {
+    count: number;
+    total_expected: number;
+    properties: Array<{
+      address: string;
+      tenant_name: string | null;
+      amount: number;
+      expected_date: string | null;
+    }>;
+  };
   total_collected_mtd: number;
   total_expected: number;
   total_remaining?: number;
   collection_rate: number;
+  resolved_count?: number;
+  returned_payments?: { count: number; total_balance: number };
   last_updated_at: string;
-  source?: "rentec" | "local" | "ledger";
+  source?: "rentec" | "local" | "ledger" | "doorloop";
 }
+
+export type OverrideStatus =
+  | "vacated"
+  | "written_off"
+  | "arrangement"
+  | "paid_cash"
+  | "other";
 
 export interface RentRow {
   id: number;
@@ -32,8 +59,25 @@ export interface RentRow {
   lateFeePaid: number;
   paymentDate: string | null;
   daysOverdue: number;
+  /** ISO due date for an "upcoming" (expected, not-yet-due) row; null otherwise. */
+  expectedDate?: string | null;
+  /** Real past-due balance in dollars (ties out to the Ledger). */
+  pastDueAmount?: number;
   notes: string | null;
   updatedAt: string;
+  // Kept as `doorloopLeaseId` deliberately (target convention).
+  doorloopLeaseId?: string | null;
+  propertyDoorloopId?: string | null;
+  override?: boolean;
+  overrideId?: number | null;
+  overrideStatus?: OverrideStatus | null;
+  overrideReason?: string | null;
+  overrideNotes?: string | null;
+  overrideCreatedAt?: string | null;
+  returnedDate?: string | null;
+  returnedOriginalAmount?: number | null;
+  returnedOriginalDate?: string | null;
+  returnedBalance?: number | null;
 }
 
 export interface RentPropertyDetail {

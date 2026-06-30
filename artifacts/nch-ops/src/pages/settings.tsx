@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { LogOut, User as UserIcon, Mail, Phone, Shield } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { NudgeSettingsCard } from "@/features/followup/nudge-settings-card";
 
 export default function Settings() {
   const { user, logout } = useAuth();
@@ -57,6 +58,8 @@ export default function Settings() {
             </div>
           </CardContent>
         </Card>
+
+        {user?.role === "jacob" && <NudgeSettingsCard />}
 
         <Button variant="destructive" className="w-full h-14 text-lg font-bold" onClick={() => logout()}>
           <LogOut className="w-5 h-5 mr-2" /> Sign Out

@@ -1,6 +1,6 @@
 import { useAuth } from "@/lib/auth";
 import { Link, useLocation } from "wouter";
-import { Home, CheckSquare, Building2, Grid, Contact } from "lucide-react";
+import { Home, CheckSquare, Receipt, Grid, Contact } from "lucide-react";
 import { useListTasks, getListTasksQueryKey } from "@workspace/api-client-react";
 import { NotificationBanner } from "@/components/NotificationBanner";
 
@@ -53,8 +53,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </Link>
 
           <Link href="/properties" className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${isActive("/properties") ? "text-primary" : "text-muted-foreground"}`}>
-            <Building2 className="w-5 h-5" />
-            <span className="text-[10px] font-medium">Properties</span>
+            <Receipt className="w-5 h-5" />
+            <span className="text-[10px] font-medium">Ledger</span>
           </Link>
 
           <Link href="/directory" className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${isActive("/directory") ? "text-primary" : "text-muted-foreground"}`}>

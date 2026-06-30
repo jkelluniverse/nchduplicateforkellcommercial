@@ -1,6 +1,7 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
+import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { Layout } from "@/components/layout";
@@ -14,6 +15,8 @@ import More from "@/pages/more";
 import Properties from "@/pages/properties";
 import Settings from "@/pages/settings";
 import Directory from "@/pages/directory";
+import Evictions from "@/pages/evictions";
+import EvictionCaseScreen from "@/pages/eviction-case";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -81,6 +84,18 @@ function Router() {
         </Layout>
       </Route>
 
+      <Route path="/evictions">
+        <Layout>
+          <ProtectedRoute component={Evictions} />
+        </Layout>
+      </Route>
+
+      <Route path="/evictions/:id">
+        <Layout>
+          <ProtectedRoute component={EvictionCaseScreen} />
+        </Layout>
+      </Route>
+
       <Route path="/settings">
         <Layout>
           <ProtectedRoute component={Settings} />
@@ -106,6 +121,7 @@ function App() {
           </AuthProvider>
         </WouterRouter>
         <Toaster />
+        <SonnerToaster richColors position="top-center" />
       </TooltipProvider>
     </QueryClientProvider>
   );

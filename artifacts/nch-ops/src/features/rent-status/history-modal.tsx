@@ -24,6 +24,8 @@ const STATUS_LABEL: Record<RentStatusValue, string> = {
   late: "Late",
   delinquent: "Delinquent",
   partial: "Partial",
+  upcoming: "Expected",
+  returned_payment: "Returned",
 };
 
 const STATUS_DOT: Record<RentStatusValue, string> = {
@@ -32,6 +34,8 @@ const STATUS_DOT: Record<RentStatusValue, string> = {
   late: "bg-amber-500",
   delinquent: "bg-[#B23A2E]",
   partial: "bg-amber-400",
+  upcoming: "bg-blue-500",
+  returned_payment: "bg-amber-500",
 };
 
 export function HistoryModal({ open, onOpenChange, initialMonth, initialYear }: Props) {

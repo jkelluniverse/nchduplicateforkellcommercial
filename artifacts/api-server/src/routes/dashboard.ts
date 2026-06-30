@@ -3,6 +3,7 @@ import { sql, gte } from "drizzle-orm";
 import { db, tasksTable, activityTable } from "@workspace/db";
 import { requireAuth, type AuthRequest } from "../middlewares/auth";
 import { getLiveRentStatus } from "../services/rent-source";
+import { getOverrideMap } from "../services/rent-overrides";
 
 const router: IRouter = Router();
 
@@ -30,18 +31,24 @@ router.get("/dashboard/summary", requireAuth, async (req: AuthRequest, res): Pro
   const live = await getLiveRentStatus(now.getMonth() + 1, now.getFullYear());
   const snapshot = live?.data ?? null;
 
-  const rows = snapshot?.rows ?? [];
+  // Exclude manually-resolved (override) properties from the headline counts and
+  // rent roll, exactly as the Rent Collection widget does, so the two agree.
+  const overrides = snapshot
+    ? await getOverrideMap(now.getMonth() + 1, now.getFullYear()).catch(() => new Map())
+    : new Map();
+  const rows = (snapshot?.rows ?? []).filter((r) => !overrides.has(r.address));
   const pastDueRows = rows.filter((r) => r.status === "unpaid" || r.status === "late" || r.status === "partial" || r.status === "delinquent");
   const delinquentRows = rows.filter((r) => r.status === "delinquent");
   const currentRows = rows.filter((r) => r.status === "paid");
+  // "Expected" = owes this month's rent but its (custom) due day hasn't arrived
+  // yet. Counted separately so it inflates neither paid nor past-due.
+  const expectedRows = rows.filter((r) => r.status === "upcoming");
   // Expected = full rent roll of occupied properties. Collected = rent received
   // this month. Remaining starts at the full roll and shrinks as people pay.
   const expectedThisMonth = rows.reduce((sum, r) => sum + (r.monthlyRent || 0), 0);
   const collectedThisMonth = rows.reduce((sum, r) => sum + (r.amountPaid || 0), 0);
-  const pastDueAmount = pastDueRows.reduce(
-    (sum, r) => sum + Math.max(0, (r.monthlyRent || 0) - (r.amountPaid || 0)) + (r.lateFeeDue || 0),
-    0,
-  );
+  // Use each row's real past-due balance so this ties out to the Ledger.
+  const pastDueAmount = pastDueRows.reduce((sum, r) => sum + (r.pastDueAmount || 0), 0);
   const remainingThisMonth = Math.max(0, expectedThisMonth - collectedThisMonth);
 
   res.json({
@@ -54,6 +61,8 @@ router.get("/dashboard/summary", requireAuth, async (req: AuthRequest, res): Pro
       currentCount: currentRows.length,
       pastDueCount: pastDueRows.length,
       delinquentCount: delinquentRows.length,
+      expectedCount: expectedRows.length,
+      expectedThisMonthAmount: Math.round(expectedRows.reduce((s, r) => s + (r.monthlyRent || 0), 0) * 100) / 100,
       pastDueAmount: Math.round(pastDueAmount * 100) / 100,
       expectedThisMonth: Math.round(expectedThisMonth * 100) / 100,
       collectedThisMonth: Math.round(collectedThisMonth * 100) / 100,
