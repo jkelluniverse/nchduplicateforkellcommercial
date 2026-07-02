@@ -1,10 +1,14 @@
 /**
  * Picks the live rent-status source for the dashboard.
  *
- * Order of preference:
- *   1. Google Sheet ("MASTER RENT LEDGER V.4") — Jacob's source of truth, with
- *      real monthly rents and every payment.
- *   2. Rentec Direct — live balances when the sheet isn't configured.
+ * Order of preference for Kell Commercial:
+ *   1. Rentec Direct — the authoritative, live source for Dad's portfolio (its
+ *      own Rentec account). This matches the rest of the app (property ledger,
+ *      contact checklist) and carries the accurate balance/aging logic.
+ *   2. Google Sheet ("MASTER RENT LEDGER V.4") — legacy fallback ONLY when
+ *      Rentec is unreachable. It's NCH's shared tracker; its Dad-section rows
+ *      aren't reliably maintained (blank month cells there produced false
+ *      "100+ days delinquent" readings), so it must never override live Rentec.
  *
  * Both return the same DLRentStatus shape so the routes don't care which won.
  */
@@ -27,13 +31,15 @@ export async function getLiveRentStatus(
   month: number,
   year: number,
 ): Promise<RentStatusResult | null> {
-  if (hasLedger()) {
-    const data = await getLedgerRentStatus(month, year);
-    if (data) return { data, source: "ledger" };
-  }
+  // Rentec first — the authoritative live source. Only fall back to the sheet
+  // when Rentec is unreachable / returns nothing.
   if (rentec.hasApiKey()) {
     const data = await rentec.getRentStatus(month, year);
     if (data) return { data, source: "rentec" };
+  }
+  if (hasLedger()) {
+    const data = await getLedgerRentStatus(month, year);
+    if (data) return { data, source: "ledger" };
   }
   return null;
 }
