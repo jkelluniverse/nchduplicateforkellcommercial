@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
-import { Search, ChevronRight, RefreshCw, ArrowUpDown, X } from "lucide-react";
+import { Search, ChevronRight, RefreshCw, ArrowUpDown, X, FileWarning } from "lucide-react";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authHeaders() {
@@ -64,6 +64,169 @@ function fmtDate(iso: string): string {
   return new Date(t).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
 }
 
+// ─── Past Due Notice: fillable form (auto-filled from the ledger) ────────────
+/** Local-date ISO (YYYY-MM-DD) so date inputs don't roll back a day in the UTC. */
+function isoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function downloadPdf(filename: string, base64: string): void {
+  const bytes = atob(base64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([arr], { type: "application/pdf" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function PastDueNoticeForm({
+  property,
+  currentBalance,
+  onClose,
+}: {
+  property: LedgerProperty;
+  currentBalance: number;
+  onClose: () => void;
+}) {
+  const recipient = [property.resident1Name, property.resident2Name]
+    .filter(Boolean)
+    .join(" & ");
+  const today = new Date();
+  const payBy = new Date();
+  payBy.setDate(payBy.getDate() + 10);
+
+  const [form, setForm] = useState({
+    recipient_name: recipient,
+    property_address: property.address,
+    notice_date: isoDate(today),
+    pay_by_date: isoDate(payBy),
+    period_covered: "",
+    account_ref: "",
+    amount_past_due: Math.max(0, -currentBalance),
+    late_fees: 0,
+    other_charges: 0,
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const set = (k: keyof typeof form, v: string | number) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  const total =
+    (Number(form.amount_past_due) || 0) +
+    (Number(form.late_fees) || 0) +
+    (Number(form.other_charges) || 0);
+
+  const generate = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/documents/past-due-notice`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          ...form,
+          amount_past_due: Number(form.amount_past_due) || 0,
+          late_fees: Number(form.late_fees) || 0,
+          other_charges: Number(form.other_charges) || 0,
+        }),
+      });
+      if (!r.ok) {
+        throw new Error((await r.json().catch(() => ({}))).error || `Request failed (${r.status})`);
+      }
+      const { filename, pdfBase64 } = (await r.json()) as { filename: string; pdfBase64: string };
+      downloadPdf(filename, pdfBase64);
+      onClose();
+    } catch (e: any) {
+      setError(e.message || "Failed to generate the notice");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field = "w-full rounded-lg border bg-background px-3 py-2 text-sm";
+  const label = "block text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+      <div className="w-full sm:max-w-lg max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl bg-card shadow-xl">
+        <div className="sticky top-0 bg-[#B23A2E] text-white px-4 py-3 flex items-center justify-between">
+          <h2 className="font-bold text-base">Past Due Notice</h2>
+          <button type="button" onClick={onClose} className="text-white/80 hover:text-white">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div>
+            <label className={label}>Recipient</label>
+            <Input value={form.recipient_name} onChange={(e) => set("recipient_name", e.target.value)} className={field} />
+          </div>
+          <div>
+            <label className={label}>Property address</label>
+            <Input value={form.property_address} onChange={(e) => set("property_address", e.target.value)} className={field} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={label}>Notice date</label>
+              <input type="date" value={form.notice_date} onChange={(e) => set("notice_date", e.target.value)} className={field} />
+            </div>
+            <div>
+              <label className={label}>Pay by date</label>
+              <input type="date" value={form.pay_by_date} onChange={(e) => set("pay_by_date", e.target.value)} className={field} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={label}>Period covered</label>
+              <Input value={form.period_covered} onChange={(e) => set("period_covered", e.target.value)} placeholder="optional" className={field} />
+            </div>
+            <div>
+              <label className={label}>Account / Ref</label>
+              <Input value={form.account_ref} onChange={(e) => set("account_ref", e.target.value)} placeholder="optional" className={field} />
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className={label}>Past due</label>
+              <input type="number" step="0.01" value={form.amount_past_due} onChange={(e) => set("amount_past_due", e.target.value === "" ? 0 : Number(e.target.value))} className={field} />
+            </div>
+            <div>
+              <label className={label}>Late fees</label>
+              <input type="number" step="0.01" value={form.late_fees} onChange={(e) => set("late_fees", e.target.value === "" ? 0 : Number(e.target.value))} className={field} />
+            </div>
+            <div>
+              <label className={label}>Other</label>
+              <input type="number" step="0.01" value={form.other_charges} onChange={(e) => set("other_charges", e.target.value === "" ? 0 : Number(e.target.value))} className={field} />
+            </div>
+          </div>
+          <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
+            <span className="text-sm font-semibold text-muted-foreground">Total amount due</span>
+            <span className="text-lg font-extrabold tabular-nums">{fmtMoney(total)}</span>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={onClose} className="flex-1 rounded-lg border px-4 py-2 text-sm font-semibold hover:bg-muted">
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={generate}
+              disabled={busy || !form.recipient_name.trim() || !form.property_address.trim()}
+              className="flex-1 rounded-lg bg-[#B23A2E] px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#9c3227] disabled:opacity-50"
+            >
+              {busy ? "Generating…" : "Generate PDF"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: () => void }) {
   const { data, isLoading, isError } = useQuery<LedgerStatement>({
     queryKey: ["ledger", property.id],
@@ -74,11 +237,20 @@ function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: ()
     },
   });
 
-  const balance = data?.currentBalance ?? 0;
+  const balance = data?.currentBalance ?? property.currentBalance ?? 0;
   const owes = balance < 0;
+
+  const [noticeOpen, setNoticeOpen] = useState(false);
 
   return (
     <div className="pb-24">
+      {noticeOpen && (
+        <PastDueNoticeForm
+          property={property}
+          currentBalance={balance}
+          onClose={() => setNoticeOpen(false)}
+        />
+      )}
       <div className="bg-primary text-primary-foreground px-4 pt-4 pb-3 sticky top-0 z-10 shadow-md">
         <button type="button" onClick={onBack} className="text-primary-foreground/70 text-sm mb-2 hover:text-primary-foreground">
           &larr; Back to properties
@@ -104,6 +276,14 @@ function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: ()
           <p className="text-sm text-muted-foreground mt-0.5">
             {balance === 0 ? "Paid in full" : owes ? "Balance owed" : "Credit on account"}
           </p>
+          <button
+            type="button"
+            onClick={() => setNoticeOpen(true)}
+            className="mt-3 w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-[#B23A2E] px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#9c3227] active:opacity-90"
+          >
+            <FileWarning className="w-4 h-4" />
+            Past Due Notice
+          </button>
         </div>
 
         {/* Statement */}

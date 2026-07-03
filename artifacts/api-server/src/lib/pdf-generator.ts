@@ -27,11 +27,17 @@ const X_AMT   = X_PRICE + COL_PRICE;
 
 const FOOTER_TEXT = "Nice City Homes LLC  ·  330-495-8192  ·  Canton, Ohio  ·  Home Ownership Specialists";
 
-// Kell Commercial company identity for the court-ready account-balance
-// statement. Override COMPANY_STATEMENT_LINE with the exact legal entity line
-// (name · address · phone) for filings.
+// Kell Commercial company identity — used by the court-ready account-balance
+// statement and the Past Due Notice. Override any piece via env for the exact
+// legal entity details on filings.
 const COMPANY_NAME = process.env.COMPANY_NAME || "Kell Commercial Leasing";
-const COMPANY_STATEMENT_LINE = process.env.COMPANY_STATEMENT_LINE || COMPANY_NAME;
+const COMPANY_ADDRESS = process.env.COMPANY_ADDRESS || "2202 31st St NE, Canton, OH 44705";
+const COMPANY_PHONE = process.env.COMPANY_PHONE || "330-495-7821";
+const COMPANY_STATEMENT_LINE =
+  process.env.COMPANY_STATEMENT_LINE || `${COMPANY_NAME} · ${COMPANY_ADDRESS} · ${COMPANY_PHONE}`;
+
+// Light red tint for alternating Past Due Notice table rows.
+const LIGHT_RED = "#F3E3E3";
 
 export interface LineItem {
   title: string;
@@ -678,6 +684,181 @@ export async function generateAccountBalance(data: AccountBalanceData): Promise<
 
     doc.save().font("Helvetica-Oblique").fontSize(7.5).fillColor("#666666")
       .text(`This statement was generated from ${COMPANY_NAME} property management records on ${data.generated_date}.`, M, PG_H - M - 16, { width: USABLE, align: "center" }).restore();
+
+    doc.end();
+    stream.on("finish", () => resolve(filePath));
+    stream.on("error", reject);
+  });
+}
+
+export interface PastDueNoticeData {
+  recipient_name: string;
+  property_address: string;
+  notice_date: string;
+  pay_by_date: string;
+  period_covered?: string;
+  account_ref?: string;
+  amount_past_due: number;
+  late_fees?: number;
+  other_charges?: number;
+}
+
+/** ISO (YYYY-MM-DD) → "July 1, 2026"; anything else is printed as-is. */
+function fmtNoticeDate(v: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((v || "").trim());
+  if (!m) return v;
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  if (isNaN(d.getTime())) return v;
+  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
+
+/**
+ * Branded one-page "Past Due Notice" — a formal demand for payment generated
+ * from a property's ledger balance. Mirrors generateAccountBalance's structure.
+ */
+export async function generatePastDueNotice(data: PastDueNoticeData): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: "LETTER", margin: 0, autoFirstPage: true });
+    const filePath = tempFilePath(
+      `PASTDUE_${(data.property_address || "notice").replace(/[^a-zA-Z0-9]/g, "_").slice(0, 30)}.pdf`,
+    );
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+
+    const pastDue = Number(data.amount_past_due) || 0;
+    const lateFees = Number(data.late_fees) || 0;
+    const otherCharges = Number(data.other_charges) || 0;
+    const totalDue = pastDue + lateFees + otherCharges;
+    const noticeDate = fmtNoticeDate(data.notice_date);
+    const payByDate = data.pay_by_date ? fmtNoticeDate(data.pay_by_date) : "";
+
+    let y = M;
+
+    // 1. Header — logo top-left, company block top-right.
+    const lp = logoPath();
+    if (fs.existsSync(lp)) doc.image(lp, M, y, { width: 120, height: 46 });
+    doc.save().font("Helvetica-Bold").fontSize(9.5).fillColor("#555555")
+      .text(COMPANY_NAME, M, y, { width: USABLE, align: "right" }).restore();
+    doc.save().font("Helvetica").fontSize(8.5).fillColor("#555555")
+      .text(COMPANY_ADDRESS, M, y + 14, { width: USABLE, align: "right" })
+      .text(COMPANY_PHONE, M, y + 26, { width: USABLE, align: "right" }).restore();
+    y += 58;
+
+    // 2. Full-width red banner.
+    const BANNER_H = 34;
+    doc.save().rect(M, y, USABLE, BANNER_H).fill(PRIMARY_RED).restore();
+    doc.save().font("Helvetica-Bold").fontSize(20).fillColor("#FFFFFF")
+      .text("PAST DUE NOTICE", M, y + 6, { width: USABLE, align: "center" }).restore();
+    y += BANNER_H + 16;
+
+    // 3. Date (left) / Account-Ref (right).
+    doc.save().font("Helvetica").fontSize(9.5).fillColor("#555555")
+      .text(`Date:  ${noticeDate}`, M, y, { width: USABLE / 2 }).restore();
+    if (data.account_ref && data.account_ref.trim()) {
+      doc.save().font("Helvetica").fontSize(9.5).fillColor("#555555")
+        .text(`Account / Ref:  ${data.account_ref.trim()}`, M, y, { width: USABLE, align: "right" }).restore();
+    }
+    y += 22;
+
+    // 4. TO: / RE: block.
+    doc.save().font("Helvetica").fontSize(11).fillColor(DARK_TEXT);
+    doc.font("Helvetica-Bold").text("TO: ", M, y, { continued: true })
+      .font("Helvetica").text(data.recipient_name || "");
+    y += doc.heightOfString(`TO: ${data.recipient_name || ""}`, { width: USABLE }) + 2;
+    doc.font("Helvetica-Bold").text("RE: ", M, y, { continued: true })
+      .font("Helvetica").text(`Property located at ${data.property_address || ""}`);
+    y += doc.heightOfString(`RE: Property located at ${data.property_address || ""}`, { width: USABLE });
+    doc.restore();
+    y += 14;
+
+    // 5. Opening paragraph.
+    const periodClause = data.period_covered && data.period_covered.trim()
+      ? ` for ${data.period_covered.trim()}` : "";
+    const opening =
+      `Our records show that your account with ${COMPANY_NAME} is PAST DUE. The balance below${periodClause} ` +
+      `remains unpaid and is now delinquent. This letter is a formal demand for immediate payment in full.`;
+    doc.save().font("Helvetica").fontSize(10.5).fillColor(DARK_TEXT)
+      .text(opening, M, y, { width: USABLE, align: "justify" }).restore();
+    y += doc.heightOfString(opening, { width: USABLE }) + 16;
+
+    // 6. Amounts table.
+    const ROW_H = 22;
+    const AMT_W = 150;
+    const DESC_W = USABLE - AMT_W;
+    const AMT_X = M + DESC_W;
+    const tableTop = y;
+
+    // Header row.
+    doc.save().rect(M, y, USABLE, ROW_H).fill(PRIMARY_RED).restore();
+    doc.save().font("Helvetica-Bold").fontSize(9).fillColor("#FFFFFF")
+      .text("DESCRIPTION", M + 8, y + 6, { width: DESC_W - 12 })
+      .text("AMOUNT", AMT_X, y + 6, { width: AMT_W - 8, align: "right" }).restore();
+    y += ROW_H;
+
+    // Body rows — always include Past due balance; others only if > 0.
+    const bodyRows: Array<[string, number]> = [["Past due balance", pastDue]];
+    if (lateFees > 0) bodyRows.push(["Late fees", lateFees]);
+    if (otherCharges > 0) bodyRows.push(["Other charges", otherCharges]);
+    bodyRows.forEach(([label, amount], i) => {
+      if (i % 2 === 1) doc.save().rect(M, y, USABLE, ROW_H).fill(LIGHT_RED).restore();
+      doc.save().font("Helvetica").fontSize(10).fillColor(DARK_TEXT)
+        .text(label, M + 8, y + 6, { width: DESC_W - 12 })
+        .text(fmt(amount), AMT_X, y + 6, { width: AMT_W - 8, align: "right" }).restore();
+      y += ROW_H;
+    });
+
+    // Total row.
+    doc.save().rect(M, y, USABLE, ROW_H).fill(PRIMARY_RED).restore();
+    doc.save().font("Helvetica-Bold").fontSize(10).fillColor("#FFFFFF")
+      .text("TOTAL AMOUNT DUE", M + 8, y + 6, { width: DESC_W - 12 })
+      .text(fmt(totalDue), AMT_X, y + 6, { width: AMT_W - 8, align: "right" }).restore();
+    y += ROW_H;
+
+    // Thin red border around the whole table.
+    doc.save().rect(M, tableTop, USABLE, y - tableTop).strokeColor(PRIMARY_RED).lineWidth(0.75).stroke().restore();
+    y += 18;
+
+    // 7. Bold red pay-by line.
+    if (payByDate) {
+      const payLine = `PAYMENT IN FULL MUST BE RECEIVED BY ${payByDate.toUpperCase()}.`;
+      doc.save().font("Helvetica-Bold").fontSize(12).fillColor(PRIMARY_RED)
+        .text(payLine, M, y, { width: USABLE }).restore();
+      y += doc.heightOfString(payLine, { width: USABLE }) + 14;
+    }
+
+    // 8. Consequences paragraph.
+    const consequences =
+      `If full payment is not received by the date above, ${COMPANY_NAME} may pursue every remedy available ` +
+      `under your agreement and Ohio law. This may include termination of your right to occupy the property, ` +
+      `proceedings to recover possession of the property, additional late fees and costs, and other collection ` +
+      `action. Avoid these consequences by paying the full amount due now.`;
+    doc.save().font("Helvetica").fontSize(10.5).fillColor(DARK_TEXT)
+      .text(consequences, M, y, { width: USABLE, align: "justify" }).restore();
+    y += doc.heightOfString(consequences, { width: USABLE }) + 14;
+
+    // 9. Payment instructions.
+    const instructions =
+      `Make payment to ${COMPANY_NAME}. If you have already paid in full, or believe this notice is in error, ` +
+      `contact our office immediately at ${COMPANY_PHONE}.`;
+    doc.save().font("Helvetica").fontSize(10).fillColor("#555555")
+      .text(instructions, M, y, { width: USABLE, align: "justify" }).restore();
+    y += doc.heightOfString(instructions, { width: USABLE }) + 24;
+
+    // 10. Signature block.
+    doc.save().font("Helvetica").fontSize(10.5).fillColor(DARK_TEXT).text("Sincerely,", M, y).restore();
+    y += 40;
+    doc.save().moveTo(M, y).lineTo(M + 2.6 * 72, y).strokeColor(DARK_TEXT).lineWidth(0.75).stroke().restore();
+    y += 6;
+    doc.save().font("Helvetica-Bold").fontSize(10.5).fillColor(DARK_TEXT).text("Authorized Representative", M, y).restore();
+    y += 15;
+    doc.save().font("Helvetica").fontSize(10).fillColor("#555555").text(COMPANY_NAME, M, y).restore();
+
+    // 11. Footer at bottom.
+    const fy = PG_H - M - 22;
+    drawLine(doc, M, fy, M + USABLE, PRIMARY_RED, 0.75);
+    doc.save().font("Helvetica").fontSize(8).fillColor("#555555")
+      .text(`${COMPANY_NAME}   ·   ${COMPANY_ADDRESS}   ·   ${COMPANY_PHONE}`, M, fy + 6, { width: USABLE, align: "center" })
+      .restore();
 
     doc.end();
     stream.on("finish", () => resolve(filePath));
