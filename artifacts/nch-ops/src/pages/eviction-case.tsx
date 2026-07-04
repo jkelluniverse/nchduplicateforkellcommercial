@@ -47,6 +47,7 @@ export default function EvictionCaseScreen() {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [docType, setDocType] = useState("other");
   const [viewerDoc, setViewerDoc] = useState<CaseDocument | null>(null);
+  const [filesOpen, setFilesOpen] = useState(false);
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: evictionKey(caseId) }); void qc.invalidateQueries({ queryKey: evictionsKey }); };
 
@@ -72,6 +73,17 @@ export default function EvictionCaseScreen() {
         </div>
         {c.writtenOffAt && <span className="text-[10px] font-bold bg-white/20 rounded-full px-2 py-0.5 shrink-0">Written off</span>}
         <button type="button" onClick={() => setEditOpen(true)} className="shrink-0 p-1.5 rounded-full bg-white/15"><Pencil className="w-4 h-4" /></button>
+      </div>
+
+      {/* One-click: view every uploaded file for this case */}
+      <div className="px-4 pt-3">
+        <button
+          type="button"
+          onClick={() => setFilesOpen(true)}
+          className="w-full flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold border border-[#B23A2E]/40 text-[#B23A2E] bg-[#B23A2E]/5"
+        >
+          <ImageIcon className="w-4 h-4" /> View all files ({data.documents.length})
+        </button>
       </div>
 
       {/* Pipeline */}
@@ -205,6 +217,14 @@ export default function EvictionCaseScreen() {
       {advanceOpen && next && <AdvanceSheet caseId={caseId} current={c.status} next={next} courtDate={c.courtDate} onClose={() => setAdvanceOpen(false)} onDone={() => { setAdvanceOpen(false); invalidate(); }} />}
       {writeOffOpen && <WriteOffSheet caseId={caseId} amount={c.balanceAtFiling ?? 0} onClose={() => setWriteOffOpen(false)} onDone={() => { setWriteOffOpen(false); invalidate(); }} />}
       {viewerDoc && <DocumentViewer caseId={caseId} doc={viewerDoc} onClose={() => setViewerDoc(null)} />}
+      {filesOpen && (
+        <FilesGallery
+          caseId={caseId}
+          docs={data.documents}
+          onClose={() => setFilesOpen(false)}
+          onOpen={(d) => { setFilesOpen(false); setViewerDoc(d); }}
+        />
+      )}
     </div>
   );
 }
@@ -239,6 +259,92 @@ function DocumentViewer({ caseId, doc, onClose }: { caseId: number; doc: CaseDoc
           <a href={data.fileBase64} download={doc.documentName} className="text-white text-sm underline">Download {doc.documentName}</a>
         )}
       </div>
+    </div>
+  );
+}
+
+const DOC_TYPE_LABEL: Record<string, string> = {
+  notice_posted: "Proof of Service",
+  account_balance: "Account Balance",
+  notice_3day: "3-Day Notice",
+  notice_10day: "10-Day Notice",
+  notice: "Notice",
+  land_contract: "Land Contract",
+  court_filing: "Court Filing",
+  summons: "Summons",
+  judgment: "Judgment",
+  other: "Document",
+};
+
+/** One-click gallery of EVERY uploaded file on the case (docs + proof photos +
+ *  generated statements). Tap any tile to open the full-screen preview. */
+function FilesGallery({
+  caseId,
+  docs,
+  onClose,
+  onOpen,
+}: {
+  caseId: number;
+  docs: CaseDocument[];
+  onClose: () => void;
+  onOpen: (d: CaseDocument) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[92] bg-black/60 flex flex-col" onClick={onClose}>
+      <div
+        className="mt-auto sm:m-auto w-full sm:max-w-2xl max-h-[85vh] bg-card rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="sticky top-0 bg-[#B23A2E] text-white px-4 py-3 flex items-center justify-between">
+          <h2 className="font-bold text-base">All Files ({docs.length})</h2>
+          <button type="button" onClick={onClose} aria-label="Close"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-4 overflow-y-auto">
+          {docs.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-10">No files uploaded yet.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {docs.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => onOpen(d)}
+                  className="text-left rounded-lg border border-border overflow-hidden hover:shadow-md transition-shadow"
+                >
+                  <FileTile caseId={caseId} doc={d} />
+                  <div className="p-2">
+                    <p className="text-xs font-medium truncate">{d.documentName}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">
+                      {DOC_TYPE_LABEL[d.documentType] ?? "Document"}
+                      {d.uploadedAt ? ` · ${fmtDate(d.uploadedAt)}` : ""}
+                    </p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Thumbnail for a gallery tile — image preview (DB-backed) or a file icon. */
+function FileTile({ caseId, doc }: { caseId: number; doc: CaseDocument }) {
+  const looksImage = (doc.mimeType ?? "").startsWith("image/") || doc.documentType === "notice_posted";
+  const { data } = useQuery({
+    queryKey: ["eviction-doc-content", caseId, doc.id],
+    queryFn: () => documentContent(caseId, doc.id),
+    enabled: looksImage && (doc.hasContent === true || !!doc.driveFileId),
+    staleTime: 5 * 60 * 1000,
+  });
+  const isImage = (data?.mimeType ?? doc.mimeType ?? "").startsWith("image/") || (looksImage && !!data);
+  if (isImage && data) {
+    return <img src={data.fileBase64} alt={doc.documentName} className="w-full h-28 object-cover bg-muted" />;
+  }
+  return (
+    <div className="w-full h-28 flex items-center justify-center bg-muted">
+      <FileText className="w-8 h-8 text-muted-foreground" />
     </div>
   );
 }
