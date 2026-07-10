@@ -47,7 +47,6 @@ export default function EvictionCaseScreen() {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [docType, setDocType] = useState("other");
   const [viewerDoc, setViewerDoc] = useState<CaseDocument | null>(null);
-  const [filesOpen, setFilesOpen] = useState(false);
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: evictionKey(caseId) }); void qc.invalidateQueries({ queryKey: evictionsKey }); };
 
@@ -73,17 +72,6 @@ export default function EvictionCaseScreen() {
         </div>
         {c.writtenOffAt && <span className="text-[10px] font-bold bg-white/20 rounded-full px-2 py-0.5 shrink-0">Written off</span>}
         <button type="button" onClick={() => setEditOpen(true)} className="shrink-0 p-1.5 rounded-full bg-white/15"><Pencil className="w-4 h-4" /></button>
-      </div>
-
-      {/* One-click: view every uploaded file for this case */}
-      <div className="px-4 pt-3">
-        <button
-          type="button"
-          onClick={() => setFilesOpen(true)}
-          className="w-full flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold border border-[#B23A2E]/40 text-[#B23A2E] bg-[#B23A2E]/5"
-        >
-          <ImageIcon className="w-4 h-4" /> View all files ({data.documents.length})
-        </button>
       </div>
 
       {/* Pipeline */}
@@ -151,7 +139,7 @@ export default function EvictionCaseScreen() {
             const previewable = d.hasContent || !!d.driveFileId || !!d.driveUrl;
             return (
               <div key={d.id} className="flex items-center gap-2 rounded-lg border border-border p-2.5">
-                <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
+                <DocThumb caseId={caseId} doc={d} />
                 <button
                   type="button"
                   onClick={() => previewable && setViewerDoc(d)}
@@ -217,14 +205,6 @@ export default function EvictionCaseScreen() {
       {advanceOpen && next && <AdvanceSheet caseId={caseId} current={c.status} next={next} courtDate={c.courtDate} onClose={() => setAdvanceOpen(false)} onDone={() => { setAdvanceOpen(false); invalidate(); }} />}
       {writeOffOpen && <WriteOffSheet caseId={caseId} amount={c.balanceAtFiling ?? 0} onClose={() => setWriteOffOpen(false)} onDone={() => { setWriteOffOpen(false); invalidate(); }} />}
       {viewerDoc && <DocumentViewer caseId={caseId} doc={viewerDoc} onClose={() => setViewerDoc(null)} />}
-      {filesOpen && (
-        <FilesGallery
-          caseId={caseId}
-          docs={data.documents}
-          onClose={() => setFilesOpen(false)}
-          onOpen={(d) => { setFilesOpen(false); setViewerDoc(d); }}
-        />
-      )}
     </div>
   );
 }
@@ -263,89 +243,23 @@ function DocumentViewer({ caseId, doc, onClose }: { caseId: number; doc: CaseDoc
   );
 }
 
-const DOC_TYPE_LABEL: Record<string, string> = {
-  notice_posted: "Proof of Service",
-  account_balance: "Account Balance",
-  notice_3day: "3-Day Notice",
-  notice_10day: "10-Day Notice",
-  notice: "Notice",
-  land_contract: "Land Contract",
-  court_filing: "Court Filing",
-  summons: "Summons",
-  judgment: "Judgment",
-  other: "Document",
-};
-
-/** One-click gallery of EVERY uploaded file on the case (docs + proof photos +
- *  generated statements). Tap any tile to open the full-screen preview. */
-function FilesGallery({
-  caseId,
-  docs,
-  onClose,
-  onOpen,
-}: {
-  caseId: number;
-  docs: CaseDocument[];
-  onClose: () => void;
-  onOpen: (d: CaseDocument) => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-[92] bg-black/60 flex flex-col" onClick={onClose}>
-      <div
-        className="mt-auto sm:m-auto w-full sm:max-w-2xl max-h-[85vh] bg-card rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="sticky top-0 bg-[#B23A2E] text-white px-4 py-3 flex items-center justify-between">
-          <h2 className="font-bold text-base">All Files ({docs.length})</h2>
-          <button type="button" onClick={onClose} aria-label="Close"><X className="w-5 h-5" /></button>
-        </div>
-        <div className="p-4 overflow-y-auto">
-          {docs.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-10">No files uploaded yet.</p>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {docs.map((d) => (
-                <button
-                  key={d.id}
-                  type="button"
-                  onClick={() => onOpen(d)}
-                  className="text-left rounded-lg border border-border overflow-hidden hover:shadow-md transition-shadow"
-                >
-                  <FileTile caseId={caseId} doc={d} />
-                  <div className="p-2">
-                    <p className="text-xs font-medium truncate">{d.documentName}</p>
-                    <p className="text-[10px] text-muted-foreground truncate">
-                      {DOC_TYPE_LABEL[d.documentType] ?? "Document"}
-                      {d.uploadedAt ? ` · ${fmtDate(d.uploadedAt)}` : ""}
-                    </p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Thumbnail for a gallery tile — image preview (DB-backed) or a file icon. */
-function FileTile({ caseId, doc }: { caseId: number; doc: CaseDocument }) {
-  const looksImage = (doc.mimeType ?? "").startsWith("image/") || doc.documentType === "notice_posted";
+/** Small inline thumbnail on a Case-Documents row — a real image preview for
+ *  photos (DB-backed, works without Drive), a file icon for PDFs/other. */
+function DocThumb({ caseId, doc }: { caseId: number; doc: CaseDocument }) {
+  const looksImage = (doc.mimeType ?? "").startsWith("image/");
   const { data } = useQuery({
     queryKey: ["eviction-doc-content", caseId, doc.id],
     queryFn: () => documentContent(caseId, doc.id),
     enabled: looksImage && (doc.hasContent === true || !!doc.driveFileId),
     staleTime: 5 * 60 * 1000,
   });
-  const isImage = (data?.mimeType ?? doc.mimeType ?? "").startsWith("image/") || (looksImage && !!data);
-  if (isImage && data) {
-    return <img src={data.fileBase64} alt={doc.documentName} className="w-full h-28 object-cover bg-muted" />;
+  if (looksImage && data) {
+    return <img src={data.fileBase64} alt="" className="w-10 h-10 rounded object-cover bg-muted shrink-0" />;
   }
   return (
-    <div className="w-full h-28 flex items-center justify-center bg-muted">
-      <FileText className="w-8 h-8 text-muted-foreground" />
-    </div>
+    <span className="w-10 h-10 rounded bg-muted flex items-center justify-center shrink-0">
+      <FileText className="w-4 h-4 text-muted-foreground" />
+    </span>
   );
 }
 
@@ -442,8 +356,18 @@ function NoticePostedSection({ caseId, address, posted, onChanged }: { caseId: n
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const thumbSrc = justUploaded ?? (posted?.driveFileId ? driveThumb(posted.driveFileId) : null);
-  const fullSrc = justUploaded ?? (posted?.driveFileId ? driveFull(posted.driveFileId) : posted?.driveUrl ?? null);
+  // The photo itself comes from the app's DB-backed content endpoint, so it
+  // shows here reliably even when Google Drive isn't configured. Drive thumbs
+  // remain only as a legacy fallback for old records with no stored bytes.
+  const contentQ = useQuery({
+    queryKey: ["eviction-doc-content", caseId, posted?.id],
+    queryFn: () => documentContent(caseId, posted!.id),
+    enabled: !!posted && !justUploaded,
+    staleTime: 5 * 60 * 1000,
+  });
+  const dbSrc = contentQ.data?.fileBase64 ?? null;
+  const thumbSrc = justUploaded ?? dbSrc ?? (posted?.driveFileId ? driveThumb(posted.driveFileId) : null);
+  const fullSrc = justUploaded ?? dbSrc ?? (posted?.driveFileId ? driveFull(posted.driveFileId) : posted?.driveUrl ?? null);
   const postedTs = posted?.postedAt ? proofTimestamp(new Date(posted.postedAt)) : null;
 
   return (
@@ -464,12 +388,18 @@ function NoticePostedSection({ caseId, address, posted, onChanged }: { caseId: n
             <button type="button" onClick={() => save.mutate()} disabled={save.isPending} className="flex-1 rounded-lg py-2 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: "#B23A2E" }}>{save.isPending ? "Saving…" : "Use This Photo"}</button>
           </div>
         </div>
-      ) : thumbSrc ? (
+      ) : posted || justUploaded ? (
         <div className="space-y-2">
-          <button type="button" onClick={() => fullSrc && setViewer(fullSrc)}>
-            <img src={thumbSrc} alt="Proof of service" className="w-[200px] max-w-full rounded-lg border border-border"
-              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-          </button>
+          {thumbSrc ? (
+            <button type="button" onClick={() => fullSrc && setViewer(fullSrc)}>
+              <img src={thumbSrc} alt="Proof of service" className="w-[200px] max-w-full rounded-lg border border-border"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+            </button>
+          ) : (
+            <div className="w-[200px] h-28 rounded-lg border border-border bg-muted flex items-center justify-center text-xs text-muted-foreground">
+              {contentQ.isLoading ? "Loading photo…" : <span className="flex items-center gap-1.5 px-2 text-center"><FileText className="w-4 h-4 shrink-0" /> {posted?.documentName ?? "Proof on file"}</span>}
+            </div>
+          )}
           {postedTs && <p className="text-sm flex items-center gap-1"><Clock className="w-3.5 h-3.5 text-muted-foreground" /> Posted: <span className="font-semibold">{postedTs}</span></p>}
           <div className="flex gap-2">
             <button type="button" onClick={() => fullSrc && setViewer(fullSrc)} className="flex-1 border border-border rounded-lg py-2 text-sm font-semibold">View Full Size</button>
