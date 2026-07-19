@@ -181,7 +181,16 @@ export async function getPropertyLedger(
 // data the dashboard already trusts: live lease balances + the same rent-status
 // aging used on the home screen.
 
-export type LedgerListStatus = "paid" | "current" | "past_due" | "expected";
+// Main statuses mirror the payment-verified rent-status classification, so the
+// Ledger's Paid / Unpaid / Delinquent counts mean "did a full rent payment
+// actually happen this month" — resetting naturally on the 1st:
+//   paid       — full rent received this month (or covered by posted-and-
+//                settled charge / a credit ≥ the month's rent)
+//   unpaid     — no full payment this month (incl. not-yet-billed months past
+//                their due day), less than 30 days behind
+//   delinquent — 30+ days behind
+//   expected   — scheduled (custom due day) later this month, not yet due
+export type LedgerListStatus = "paid" | "unpaid" | "delinquent" | "expected";
 
 export interface LedgerPropertyRow {
   id: number; // Postgres directory id — opens the per-property statement
@@ -231,6 +240,7 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
     string,
     {
       owes: boolean;
+      delinquent: boolean;
       daysLate: number;
       upcoming: boolean;
       expectedDate: string | null;
@@ -262,7 +272,7 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
         const k = streetKey(row.address);
         const prev =
           ageByKey.get(k) ??
-          { owes: false, daysLate: 0, upcoming: false, expectedDate: null, expectedAmount: 0 };
+          { owes: false, delinquent: false, daysLate: 0, upcoming: false, expectedDate: null, expectedAmount: 0 };
         if (row.status === "upcoming") {
           // Expected on a scheduled (custom) date — not past-due.
           prev.upcoming = true;
@@ -270,6 +280,7 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
           prev.expectedAmount = Math.max(prev.expectedAmount, row.monthlyRent);
         } else {
           prev.owes = prev.owes || row.status !== "paid";
+          prev.delinquent = prev.delinquent || row.status === "delinquent";
           prev.daysLate = Math.max(prev.daysLate, row.daysOverdue);
         }
         ageByKey.set(k, prev);
@@ -291,13 +302,15 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
     // Expected = owes only the not-yet-due current month (and nothing past due).
     const isExpected = !owes && (age?.upcoming ?? false);
     const daysLate = owes ? age?.daysLate ?? 0 : 0;
+    // Status mirrors the payment-verified rent-status rows; when Rentec is
+    // unreachable (no `age`), fall back to balances alone.
     const status: LedgerListStatus = isExpected
       ? "expected"
       : !owes
         ? "paid"
-        : daysLate >= DELINQUENT_DAYS || overdue > 0.005
-          ? "past_due"
-          : "current";
+        : (age ? age.delinquent : daysLate >= DELINQUENT_DAYS || overdue > 0.005)
+          ? "delinquent"
+          : "unpaid";
     return {
       id: p.id,
       address: p.address,

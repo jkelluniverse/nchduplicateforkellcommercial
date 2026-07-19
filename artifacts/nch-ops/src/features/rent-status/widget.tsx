@@ -154,6 +154,7 @@ export function RentStatusWidget() {
               count={paidCount}
               line1={`${fmtMoney(paidCollected)} collected`}
               line2={lateFeesCollected > 0 ? `${fmtMoney(lateFeesCollected)} fees paid` : undefined}
+              onClick={() => navigate("/properties?filter=paid")}
             />
             <StatCard
               borderColor="border-l-red-500"
@@ -163,6 +164,7 @@ export function RentStatusWidget() {
               count={summary.unpaid.count}
               line1={`${fmtMoney(summary.unpaid.total_outstanding)} outstanding`}
               line2={summary.unpaid.late_fees_outstanding > 0 ? `${fmtMoney(summary.unpaid.late_fees_outstanding)} fees due` : undefined}
+              onClick={() => navigate("/properties?filter=unpaid")}
             />
             <StatCard
               borderColor="border-l-[#B23A2E]"
@@ -172,6 +174,7 @@ export function RentStatusWidget() {
               count={summary.delinquent.count}
               line1={`${fmtMoney(summary.delinquent.total_outstanding)} outstanding`}
               line2={summary.delinquent.avg_days_overdue > 0 ? `Avg ${summary.delinquent.avg_days_overdue} days over` : undefined}
+              onClick={() => navigate("/properties?filter=delinquent")}
             />
           </div>
 
@@ -410,6 +413,7 @@ function StatCard({
   count,
   line1,
   line2,
+  onClick,
 }: {
   borderColor: string;
   icon: string;
@@ -418,9 +422,14 @@ function StatCard({
   count: number;
   line1: string;
   line2?: string;
+  onClick?: () => void;
 }) {
+  const Tag = onClick ? "button" : "div";
   return (
-    <div className={`bg-card rounded-lg border border-border border-l-4 ${borderColor} p-2.5 min-w-0`}>
+    <Tag
+      {...(onClick ? { type: "button" as const, onClick } : {})}
+      className={`bg-card rounded-lg border border-border border-l-4 ${borderColor} p-2.5 min-w-0 text-left ${onClick ? "active:scale-[0.98] transition-transform cursor-pointer" : ""}`}
+    >
       <div className="flex items-center gap-1">
         <span aria-hidden className="text-xs">{icon}</span>
         <p className="text-[9px] font-bold text-muted-foreground tracking-wider">{label}</p>
@@ -431,7 +440,7 @@ function StatCard({
       </p>
       <p className="text-[10px] font-medium text-foreground leading-tight mt-1 truncate">{line1}</p>
       {line2 && <p className="text-[10px] text-muted-foreground leading-tight truncate">{line2}</p>}
-    </div>
+    </Tag>
   );
 }
 

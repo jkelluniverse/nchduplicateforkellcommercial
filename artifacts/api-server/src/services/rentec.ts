@@ -1100,12 +1100,14 @@ export async function getRentStatus(
     const excludeNotYetDue = (inExpectedWindow ? monthlyRent : 0) + prebilledNext;
     const pastDueOwed = Math.max(0, outstanding - excludeNotYetDue);
     const owesPastDue = pastDueOwed > 0.005;
-    // A positive Rentec balance is a credit → the tenant is paid ahead.
-    const hasCredit = rentecBalance > 0.005;
+    // A positive Rentec balance is a credit — but only a credit that covers the
+    // FULL month's rent means "paid ahead". A small credit (e.g. $30 left over)
+    // must not make an unbilled month read as paid.
+    const creditCoversMonth = monthlyRent > 0 && rentecBalance >= monthlyRent - 0.5;
     // Expected = a custom-due-day tenant in their window who is neither paid
     // ahead nor carrying a prior-month past-due balance. Shown on their scheduled
     // date REGARDLESS of whether the charge has posted yet.
-    const isUpcoming = inExpectedWindow && !hasCredit && !owesPastDue;
+    const isUpcoming = inExpectedWindow && !creditCoversMonth && !owesPastDue;
 
     // Grace runs GRACE_DAYS past the due day; late fees begin only after that.
     const pastGrace = isCurrentMonth ? now.getDate() > dueDay + GRACE_DAYS : true;
@@ -1164,7 +1166,7 @@ export async function getRentStatus(
       // with sweep data, a $0 balance with NO payment received, NO posted
       // charge and NO credit is a not-yet-billed month (e.g. a custom due day
       // we don't know about) — the rent is still expected, not "paid".
-      if (payInfo !== undefined && !paidInFull && !chargePosted && !hasCredit) {
+      if (payInfo !== undefined && !paidInFull && !chargePosted && !creditCoversMonth) {
         if (isCurrentMonth && now.getDate() <= dueDay) {
           status = "upcoming";
           expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;

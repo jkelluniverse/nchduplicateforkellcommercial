@@ -10,7 +10,7 @@ function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem("kc_token")}`, "Content-Type": "application/json" };
 }
 
-type LedgerListStatus = "paid" | "current" | "past_due" | "expected";
+type LedgerListStatus = "paid" | "unpaid" | "delinquent" | "expected";
 
 interface LedgerProperty {
   id: number;
@@ -347,10 +347,21 @@ function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: ()
 }
 
 // ─── Ledger list: sort + filter ─────────────────────────────────────────────
-type BalanceFilter = "all" | "owing" | "paid" | "credit" | "expected";
+// Main filter = the month's payment-verified status (resets on the 1st):
+// Paid / Unpaid / Delinquent. Balance-type views (has balance, credit,
+// expected) remain as secondary filters.
+type StatusFilter = "all" | "paid" | "unpaid" | "delinquent";
+type TypeFilter = "any" | "owing" | "credit" | "expected";
 type SortKey = "balance_desc" | "balance_asc" | "address" | "tenant" | "days_late";
 type Delinquency = "all" | "current" | "1_30" | "30_plus";
 type Tri = "all" | "yes" | "no";
+
+/** Initial status filter from the URL (?filter=paid|unpaid|delinquent) so the
+ *  dashboard's PAID / UNPAID / DELINQUENT counters can deep-link here. */
+function statusFilterFromUrl(): StatusFilter {
+  const f = new URLSearchParams(window.location.search).get("filter");
+  return f === "paid" || f === "unpaid" || f === "delinquent" ? f : "all";
+}
 
 const EPS = 0.005;
 const owed = (p: LedgerProperty) => -p.currentBalance; // positive = owes
@@ -365,8 +376,8 @@ const SORT_LABEL: Record<SortKey, string> = {
 
 const STATUS_STYLE: Record<LedgerListStatus, { label: string; cls: string }> = {
   paid: { label: "Paid", cls: "bg-emerald-100 text-emerald-700" },
-  current: { label: "Owes", cls: "bg-amber-100 text-amber-700" },
-  past_due: { label: "Past due", cls: "bg-destructive/15 text-destructive" },
+  unpaid: { label: "Unpaid", cls: "bg-amber-100 text-amber-700" },
+  delinquent: { label: "Delinquent", cls: "bg-destructive/15 text-destructive" },
   expected: { label: "Expected", cls: "bg-blue-100 text-blue-700" },
 };
 
@@ -382,7 +393,8 @@ function fmtExpectedDate(iso: string | null | undefined): string {
 export default function Properties() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<LedgerProperty | null>(null);
-  const [balance, setBalance] = useState<BalanceFilter>("owing");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(statusFilterFromUrl);
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("any");
   const [sort, setSort] = useState<SortKey>("balance_desc");
   const [delinquency, setDelinquency] = useState<Delinquency>("all");
   const [situation, setSituation] = useState<Tri>("all");
@@ -396,27 +408,35 @@ export default function Properties() {
     },
   });
 
-  const balanceCounts = useMemo(() => {
-    let all = 0, owing = 0, paid = 0, credit = 0, expected = 0;
+  const counts = useMemo(() => {
+    let all = 0, paid = 0, unpaid = 0, delinquent = 0, owing = 0, credit = 0, expected = 0;
     for (const p of properties) {
       all++;
-      // Expected (not-yet-due) is its own category — never "has balance".
+      // Main buckets: has this month's rent actually been received?
+      // "Unpaid" includes expected (scheduled later this month, still unpaid).
+      if (p.status === "paid") paid++;
+      else if (p.status === "delinquent") delinquent++;
+      else unpaid++;
+      // Secondary balance-type buckets.
       if (p.status === "expected") expected++;
       else if (owed(p) > EPS) owing++;
       else if (p.currentBalance > EPS) credit++;
-      else paid++;
     }
-    return { all, owing, paid, credit, expected };
+    return { all, paid, unpaid, delinquent, owing, credit, expected };
   }, [properties]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const matchBalance = (p: LedgerProperty) =>
-      balance === "all" ||
-      (balance === "owing" && p.status !== "expected" && owed(p) > EPS) ||
-      (balance === "paid" && p.status !== "expected" && Math.abs(p.currentBalance) <= EPS) ||
-      (balance === "credit" && p.status !== "expected" && p.currentBalance > EPS) ||
-      (balance === "expected" && p.status === "expected");
+    const matchStatus = (p: LedgerProperty) =>
+      statusFilter === "all" ||
+      (statusFilter === "paid" && p.status === "paid") ||
+      (statusFilter === "delinquent" && p.status === "delinquent") ||
+      (statusFilter === "unpaid" && (p.status === "unpaid" || p.status === "expected"));
+    const matchType = (p: LedgerProperty) =>
+      typeFilter === "any" ||
+      (typeFilter === "owing" && p.status !== "expected" && owed(p) > EPS) ||
+      (typeFilter === "credit" && p.status !== "expected" && p.currentBalance > EPS) ||
+      (typeFilter === "expected" && p.status === "expected");
     const matchDelinq = (p: LedgerProperty) =>
       delinquency === "all" ||
       (delinquency === "current" && p.daysLate === 0) ||
@@ -431,7 +451,7 @@ export default function Properties() {
       (p.resident2Name?.toLowerCase().includes(q) ?? false);
 
     const out = properties.filter(
-      (p) => matchBalance(p) && matchDelinq(p) && matchSit(p) && matchSearch(p),
+      (p) => matchStatus(p) && matchType(p) && matchDelinq(p) && matchSit(p) && matchSearch(p),
     );
 
     out.sort((a, b) => {
@@ -445,16 +465,19 @@ export default function Properties() {
       }
     });
     return out;
-  }, [properties, search, balance, sort, delinquency, situation]);
+  }, [properties, search, statusFilter, typeFilter, sort, delinquency, situation]);
 
   const chips: { label: string; clear: () => void }[] = [];
+  if (typeFilter !== "any")
+    chips.push({ label: { owing: "Has balance", credit: "Credit", expected: "Expected" }[typeFilter], clear: () => setTypeFilter("any") });
   if (delinquency !== "all")
     chips.push({ label: { current: "Current", "1_30": "1–30 days", "30_plus": "30+ days" }[delinquency], clear: () => setDelinquency("all") });
   if (situation !== "all")
     chips.push({ label: situation === "yes" ? "Has situation" : "No situation", clear: () => setSituation("all") });
 
   const clearAll = () => {
-    setBalance("all");
+    setStatusFilter("all");
+    setTypeFilter("any");
     setDelinquency("all");
     setSituation("all");
     setSearch("");
@@ -464,15 +487,13 @@ export default function Properties() {
     return <LedgerView property={selected} onBack={() => setSelected(null)} />;
   }
 
-  const segments: { key: BalanceFilter; label: string; count: number }[] = [
-    { key: "owing", label: "Has balance", count: balanceCounts.owing },
-    { key: "paid", label: "Paid up", count: balanceCounts.paid },
-    { key: "credit", label: "Credit", count: balanceCounts.credit },
-    // Only surface the Expected tab when something is actually upcoming.
-    ...(balanceCounts.expected > 0
-      ? [{ key: "expected" as BalanceFilter, label: "Expected", count: balanceCounts.expected }]
-      : []),
-    { key: "all", label: "All", count: balanceCounts.all },
+  // Main month-status segments: Paid / Unpaid / Delinquent — the counts add up
+  // to All and reset naturally when the month rolls over.
+  const segments: { key: StatusFilter; label: string; count: number }[] = [
+    { key: "paid", label: "Paid", count: counts.paid },
+    { key: "unpaid", label: "Unpaid", count: counts.unpaid },
+    { key: "delinquent", label: "Delinquent", count: counts.delinquent },
+    { key: "all", label: "All", count: counts.all },
   ];
 
   return (
@@ -489,19 +510,15 @@ export default function Properties() {
           />
         </div>
 
-        {/* Balance segmented toggle with live counts */}
-        <div
-          className={`grid gap-1 bg-primary-foreground/15 rounded-xl p-1 text-xs ${
-            segments.length === 5 ? "grid-cols-5" : "grid-cols-4"
-          }`}
-        >
+        {/* Month-status segmented toggle (Paid / Unpaid / Delinquent) with live counts */}
+        <div className="grid grid-cols-4 gap-1 bg-primary-foreground/15 rounded-xl p-1 text-xs">
           {segments.map((s) => (
             <button
               key={s.key}
               type="button"
-              onClick={() => setBalance(s.key)}
+              onClick={() => setStatusFilter(s.key)}
               className={`rounded-lg py-1.5 font-semibold transition-colors ${
-                balance === s.key ? "bg-primary-foreground text-primary" : "text-primary-foreground/80"
+                statusFilter === s.key ? "bg-primary-foreground text-primary" : "text-primary-foreground/80"
               }`}
             >
               <div className="leading-tight">{s.label}</div>
@@ -524,6 +541,17 @@ export default function Properties() {
               ))}
             </select>
           </div>
+
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+            className="bg-primary-foreground/15 text-primary-foreground font-semibold rounded-lg h-8 px-2 outline-none [&>option]:text-foreground"
+          >
+            <option value="any">Any type</option>
+            <option value="owing">Has balance ({counts.owing})</option>
+            <option value="credit">Credit ({counts.credit})</option>
+            <option value="expected">Expected ({counts.expected})</option>
+          </select>
 
           <select
             value={delinquency}
@@ -559,7 +587,7 @@ export default function Properties() {
               {c.label}<X className="w-3 h-3" />
             </button>
           ))}
-          {(chips.length > 0 || balance !== "all" || search) && (
+          {(chips.length > 0 || statusFilter !== "all" || search) && (
             <button type="button" onClick={clearAll} className="underline opacity-80 hover:opacity-100">
               Clear filters
             </button>
