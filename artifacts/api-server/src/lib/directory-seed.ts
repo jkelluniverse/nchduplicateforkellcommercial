@@ -54,6 +54,7 @@ export const DIRECTORY_CONTACTS: SeedContact[] = [
   { street: "1535 Vine Ave SW", city: "Canton", state: "OH", zip: "44706", r1Name: "Anthony Sindledecker", r1Phone: "330-371-8461", r1Email: "anthonysindledecker1@gmail.com" },
   { street: "1815 3rd St SE", city: "Canton", state: "OH", zip: "44704", r1Name: "Joy Resendiz", r1Phone: "234-322-3345", r1Email: "hooverjoy961@gmail.com" },
   { street: "2010 31st St NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Makendy Francois" },
+  { street: "2202 31st St NE Unit B", city: "Canton", state: "OH", zip: "44705", r1Name: "Arnie Glantz", r1Phone: "330-284-2338", notes: "$1,750/mo · Unit B at the office building" },
 ];
 
 export function normStreet(addr: string | null | undefined): string {
