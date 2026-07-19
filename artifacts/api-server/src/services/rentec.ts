@@ -31,6 +31,8 @@
  * a real key shows different names, adjust the small mapping helpers — the
  * public shapes returned to the app must stay the same.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { logger } from "../lib/logger";
 
 const BASE_URL =
@@ -47,9 +49,32 @@ interface CacheEntry<T> {
 }
 const cache = new Map<string, CacheEntry<unknown>>();
 
+let fileKey: string | null | undefined; // undefined = not yet probed
+
+/**
+ * The key comes from the RENTEC_API_KEY env var, or from a `RENTEC_API_KEY`
+ * file at the repo/app root (how it's provisioned in this deployment).
+ * Accepts a bare key or `RENTEC_API_KEY=...` line; quotes/whitespace trimmed.
+ */
 function apiKey(): string | null {
   const k = process.env["RENTEC_API_KEY"];
-  return k && k.length > 0 ? k : null;
+  if (k && k.length > 0) return k;
+  if (fileKey === undefined) {
+    fileKey = null;
+    for (const dir of [".", "..", "../..", "../../.."]) {
+      try {
+        const raw = fs.readFileSync(path.join(process.cwd(), dir, "RENTEC_API_KEY"), "utf8");
+        let val = raw.trim();
+        const eq = val.indexOf("=");
+        if (eq !== -1 && /RENTEC_API_KEY\s*$/i.test(val.slice(0, eq))) val = val.slice(eq + 1).trim();
+        val = val.replace(/^["']|["']$/g, "").trim();
+        if (val) { fileKey = val; break; }
+      } catch {
+        /* keep probing */
+      }
+    }
+  }
+  return fileKey;
 }
 
 /** Back-compat alias used across the app to gate live calls. */
