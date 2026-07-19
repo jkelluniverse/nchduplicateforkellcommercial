@@ -46,12 +46,12 @@ export const DIRECTORY_CONTACTS: SeedContact[] = [
   { street: "1820 Vine Ave SW", city: "Canton", state: "OH", zip: "44706", r1Name: "Kevin Leech", r1Phone: "330-495-9087", r1Email: "kev.leech9966@gmail.com" },
   { street: "1618 19th St NE", city: "Canton", state: "OH", zip: "44714", r1Name: "Tom Reed", r1Phone: "330-209-1824", r1Email: "tomreed859@gmail.com", notes: "Pays on the 15th" },
   { street: "1202 15th St NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Robert" },
+  { street: "1314 Plain Ave NE", city: "Canton", state: "OH", zip: "44714", r1Name: "Terry Williams", r1Phone: "330-445-0949", r1Email: "steeldog1110@yahoo.com" },
   { street: "2617 Avalon Ave NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Mary Miku", r1Phone: "234-458-4101", r2Name: "Patrick Miku", r2Phone: "234-207-7384", r2Email: "patrickmiku28@gmail.com" },
   { street: "1200 14th St NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Thomas Kellicker", r1Phone: "330-952-7410", r1Email: "tomk_32@icloud.com" },
   { street: "1461 John Ct SE", city: "Canton", state: "OH", zip: "44707", r1Name: "Fred Wilkinson" },
   { street: "219 14th St NW", city: "Canton", state: "OH", zip: "44703", r1Name: "Frosty Ann Saunier", r1Phone: "330-324-8278", r1Email: "frosty.saunier75@gmail.com" },
   { street: "1535 Vine Ave SW", city: "Canton", state: "OH", zip: "44706", r1Name: "Anthony Sindledecker", r1Phone: "330-371-8461", r1Email: "anthonysindledecker1@gmail.com" },
-  { street: "1304 Cole Ave SE", city: "Canton", state: "OH", zip: "44707", r1Name: "Dan Radtka", r1Phone: "234-425-2056", r1Email: "radtkadan453@gmail.com", notes: "Unit recently vacated" },
   { street: "1815 3rd St SE", city: "Canton", state: "OH", zip: "44704", r1Name: "Joy Resendiz", r1Phone: "234-322-3345", r1Email: "hooverjoy961@gmail.com" },
   { street: "2010 31st St NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Makendy Francois" },
 ];
@@ -132,7 +132,7 @@ export async function seedDirectoryFromContacts(): Promise<SeedResult> {
  *    from the directory row and from every stored tenant-name snapshot).
  *  - 1620 Wooster Ave NE tenant is now Sierra Olivio.
  *  - 2010 31st St NE (Makendy Francois) added via the seed above.
- *  - 1314 Plain Ave NE moved out of this portfolio — row removed.
+ *  - 1304 Cole Ave SE SOLD — row removed.
  *
  * The seed above only fills blanks, so existing rows need these explicit
  * updates. Name snapshots live in tenant_payment_notes, rent_status,
@@ -153,7 +153,7 @@ export async function applyPortfolioFixes(): Promise<void> {
       resident1_email = 'Erikasierraolivo04@gmail.com', resident2_name = NULL,
       resident2_phone = NULL, resident2_email = NULL
     WHERE address ILIKE '1620 Wooster Ave%' AND resident1_name IS DISTINCT FROM 'Sierra Olivio'`);
-  await db.execute(sql`DELETE FROM properties WHERE address ILIKE '1314 Plain Ave NE%'`);
+  await db.execute(sql`DELETE FROM properties WHERE address ILIKE '1304 Cole Ave SE%'`);
   // Stored tenant-name snapshots.
   for (const f of fixes) {
     for (const table of ["tenant_payment_notes", "rent_status", "contact_log", "reminder_log"]) {
@@ -163,5 +163,5 @@ export async function applyPortfolioFixes(): Promise<void> {
         WHERE ${sql.raw(col)} ILIKE ${f.pattern} AND tenant_name IS DISTINCT FROM ${f.name}`);
     }
   }
-  logger.info("Portfolio fixes applied (1535 Vine, 1620 Wooster, 1314 Plain, 2010 31st)");
+  logger.info("Portfolio fixes applied (1535 Vine, 1620 Wooster, 1304 Cole sold, 2010 31st)");
 }
