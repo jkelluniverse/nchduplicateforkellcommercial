@@ -924,6 +924,64 @@ function round2(x: number): number {
  * Rentec computes balances for us, so amount-owed/past-due come straight from
  * Lease.balance — we never sum transactions to derive what's owed.
  */
+// ─── Actual payments received this month (per property) ─────────────
+//
+// "Paid up" must mean a REAL full rent payment landed during the current
+// month — not merely "no balance owed". A tenant with a later due day (e.g.
+// the 23rd) has no posted charge early in the month, so their $0 balance
+// reads as paid when in truth nothing has been received yet. We therefore
+// sweep each property's transaction ledger in the background and record how
+// much money actually came in this month (and the largest charge posted, to
+// recognize a posted-and-settled month). Rentec's /transactions filters by a
+// single property at ~1 req/sec, so the sweep is sequential and cached; until
+// the first sweep completes, classification falls back to balance logic.
+interface MonthPayInfo {
+  payments: number; // Σ credits (money in) dated this month
+  largestCharge: number; // largest single debit this month (the rent invoice)
+}
+let monthPay: { key: string; map: Map<string, MonthPayInfo>; fetchedAt: number } | null = null;
+let monthPayRefreshing = false;
+const MONTH_PAY_TTL_MS = 10 * 60 * 1000;
+
+function ensureMonthPayments(
+  month: number,
+  year: number,
+  propertyIds: string[],
+): Map<string, MonthPayInfo> | null {
+  const key = `${year}-${month}`;
+  const fresh =
+    monthPay && monthPay.key === key && Date.now() - monthPay.fetchedAt < MONTH_PAY_TTL_MS;
+  if (!fresh && !monthPayRefreshing && propertyIds.length > 0) {
+    monthPayRefreshing = true;
+    void (async () => {
+      try {
+        const prefix = `${year}-${String(month).padStart(2, "0")}`;
+        const map = new Map<string, MonthPayInfo>();
+        for (const id of propertyIds) {
+          try {
+            const lines = await getPropertyLedgerLines(id);
+            let payments = 0;
+            let largestCharge = 0;
+            for (const l of lines) {
+              if (l.hidden || !l.date.startsWith(prefix)) continue;
+              if (l.credit) payments += l.credit;
+              if (l.debit && l.debit > largestCharge) largestCharge = l.debit;
+            }
+            map.set(id, { payments: round2(payments), largestCharge });
+          } catch (err) {
+            logger.warn({ err, propertyId: id }, "month-payments: property sweep failed");
+          }
+        }
+        monthPay = { key, map, fetchedAt: Date.now() };
+        logger.info({ month, year, properties: map.size }, "month-payments sweep complete");
+      } finally {
+        monthPayRefreshing = false;
+      }
+    })();
+  }
+  return monthPay && monthPay.key === key ? monthPay.map : null;
+}
+
 export async function getRentStatus(
   month: number,
   year: number,
@@ -954,6 +1012,12 @@ export async function getRentStatus(
   // For the current month, age from today; for a past month, age from its 1st.
   const asOf = isCurrentMonth ? Date.now() : new Date(year, month, 1).getTime();
   void LATE_FEE_DAY;
+
+  // Real money received this month, per property (background sweep; null until
+  // the first sweep lands, in which case classification is balance-only).
+  const monthPayMap = isCurrentMonth
+    ? ensureMonthPayments(month, year, properties.map((p) => p.id))
+    : null;
 
   const rows: DLRentRow[] = [];
   const uniqueProps = new Set<string>();
@@ -1073,20 +1137,49 @@ export async function getRentStatus(
         )
       : 0;
 
+    // Payment-verified truth for the current month: "paid" requires a full rent
+    // payment received THIS month, or a posted charge that's been settled
+    // (covers tenants riding a prepaid credit). Without sweep data (payInfo
+    // undefined) classification stays balance-only — no behavior change.
+    const payInfo = isCurrentMonth && monthlyRent > 0 ? monthPayMap?.get(lease.property) : undefined;
+    const paidInFull = payInfo !== undefined && payInfo.payments >= monthlyRent - 0.5;
+    // The month's rent invoice posted (largest debit ≈ rent or more).
+    const chargePosted = payInfo !== undefined && payInfo.largestCharge >= monthlyRent * 0.9;
+
     let status: DLRentRow["status"];
     let daysOverdue = 0;
     let expectedDate: string | null = null;
 
-    if (isUpcoming) {
+    if (isUpcoming && !paidInFull) {
       // Custom-due-day tenant in the run-up to their date → expected, not late.
       status = "upcoming";
       daysOverdue = 0;
       expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
-    } else if (!owesPastDue || pastDueOwed < UNPAID_FLOOR) {
-      // Nothing past due — or only a sub-$100 carried fee (rent itself was paid).
-      // Treated as paid so it never shows up as unpaid/delinquent.
+    } else if (isUpcoming) {
+      // Paid ahead of their scheduled day — a real payment landed this month.
       status = "paid";
       daysOverdue = 0;
+    } else if (!owesPastDue || pastDueOwed < UNPAID_FLOOR) {
+      // Balance says nothing owed. Verify money actually moved this month:
+      // with sweep data, a $0 balance with NO payment received, NO posted
+      // charge and NO credit is a not-yet-billed month (e.g. a custom due day
+      // we don't know about) — the rent is still expected, not "paid".
+      if (payInfo !== undefined && !paidInFull && !chargePosted && !hasCredit) {
+        if (isCurrentMonth && now.getDate() <= dueDay) {
+          status = "upcoming";
+          expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
+        } else {
+          // Past the due day with no payment this month → unpaid (by schedule),
+          // aged from the due day. No late fee is invented for these (below).
+          status = "unpaid";
+          daysOverdue = daysSinceDue;
+        }
+      } else {
+        // Nothing past due — or only a sub-$100 carried fee (rent itself was
+        // paid). Treated as paid so it never shows up as unpaid/delinquent.
+        status = "paid";
+        daysOverdue = 0;
+      }
     } else if (startedThisMonthOrLater) {
       // Brand-new lease that owes its first month — unpaid, not yet aged.
       status = "unpaid";
@@ -1109,8 +1202,15 @@ export async function getRentStatus(
     const thisMonthOwed = isUpcoming
       ? monthlyRent
       : Math.min(pastDueOwed, monthlyRent);
-    const amountPaid =
+    let amountPaid =
       isUpcoming || monthlyRent <= 0 ? 0 : Math.max(0, monthlyRent - thisMonthOwed);
+    // With sweep data, "collected" tracks real money received this month: a
+    // paid row counts the full rent (payment or settled credit), anything else
+    // counts the actual dollars that landed (e.g. a partial payment) — so the
+    // collection totals stop crediting not-yet-billed months as collected.
+    if (payInfo !== undefined) {
+      amountPaid = status === "paid" ? monthlyRent : Math.min(monthlyRent, payInfo.payments);
+    }
 
     // Late fee accrues only once past the grace period (due day + grace) and
     // only while the current month's rent is actually past due (never upcoming).
