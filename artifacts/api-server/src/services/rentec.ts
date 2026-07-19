@@ -936,13 +936,22 @@ function round2(x: number): number {
 // single property at ~1 req/sec, so the sweep is sequential and cached; until
 // the first sweep completes, classification falls back to balance logic.
 interface MonthPayInfo {
-  payments: number; // Σ credits (money in) dated this month
-  largestCharge: number; // largest single debit this month (the rent invoice)
+  payments: number; // Σ credits (money in) on the RENTER's ledger this month
+  monthCharges: number; // Σ debits (rent invoices/fees) posted this month
 }
 let monthPay: { key: string; map: Map<string, MonthPayInfo>; fetchedAt: number } | null = null;
 let monthPayRefreshing = false;
 const MONTH_PAY_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * The sweep reads each property's CURRENT RENTER ledger (the same source the
+ * statement screen uses) — the property-filtered /transactions feed carries
+ * payments only, no charges, so it can't tell a settled month from an unbilled
+ * one. Renter ledgers include both. A renter with multiple properties (e.g.
+ * one tenant renting two addresses, paying both with one combined payment) is
+ * fetched ONCE and their aggregate applies to every property they rent — so a
+ * combined payment covers all of their charges.
+ */
 function ensureMonthPayments(
   month: number,
   year: number,
@@ -956,20 +965,35 @@ function ensureMonthPayments(
     void (async () => {
       try {
         const prefix = `${year}-${String(month).padStart(2, "0")}`;
-        const map = new Map<string, MonthPayInfo>();
+        // Group properties by their current renter so a multi-property tenant
+        // is fetched once and their combined payment credits every property.
+        const propsByRenter = new Map<string, string[]>();
         for (const id of propertyIds) {
           try {
-            const lines = await getPropertyLedgerLines(id);
+            const renterId = await getCurrentRenterIdForProperty(id);
+            if (!renterId) continue;
+            const arr = propsByRenter.get(renterId) ?? [];
+            arr.push(id);
+            propsByRenter.set(renterId, arr);
+          } catch {
+            /* property without a resolvable renter — skipped (balance logic applies) */
+          }
+        }
+        const map = new Map<string, MonthPayInfo>();
+        for (const [renterId, props] of propsByRenter) {
+          try {
+            const { lines } = await getTenantLedger(renterId);
             let payments = 0;
-            let largestCharge = 0;
+            let monthCharges = 0;
             for (const l of lines) {
               if (l.hidden || !l.date.startsWith(prefix)) continue;
               if (l.credit) payments += l.credit;
-              if (l.debit && l.debit > largestCharge) largestCharge = l.debit;
+              if (l.debit) monthCharges += l.debit;
             }
-            map.set(id, { payments: round2(payments), largestCharge });
+            const info: MonthPayInfo = { payments: round2(payments), monthCharges: round2(monthCharges) };
+            for (const id of props) map.set(id, info);
           } catch (err) {
-            logger.warn({ err, propertyId: id }, "month-payments: property sweep failed");
+            logger.warn({ err, renterId }, "month-payments: renter sweep failed");
           }
         }
         monthPay = { key, map, fetchedAt: Date.now() };
@@ -1143,10 +1167,16 @@ export async function getRentStatus(
     // payment received THIS month, or a posted charge that's been settled
     // (covers tenants riding a prepaid credit). Without sweep data (payInfo
     // undefined) classification stays balance-only — no behavior change.
+    //
+    // "Full" is measured against what was actually BILLED this month when a
+    // charge has posted (the lease's real rent can differ from the property's
+    // monthly_rent field, and a multi-property tenant's combined payment must
+    // cover the sum of their invoices). With nothing billed yet, fall back to
+    // the property's monthly rent.
     const payInfo = isCurrentMonth && monthlyRent > 0 ? monthPayMap?.get(lease.property) : undefined;
-    const paidInFull = payInfo !== undefined && payInfo.payments >= monthlyRent - 0.5;
-    // The month's rent invoice posted (largest debit ≈ rent or more).
-    const chargePosted = payInfo !== undefined && payInfo.largestCharge >= monthlyRent * 0.9;
+    const chargePosted = payInfo !== undefined && payInfo.monthCharges > 0.005;
+    const fullDue = chargePosted ? payInfo!.monthCharges : monthlyRent;
+    const paidInFull = payInfo !== undefined && payInfo.payments >= fullDue - 0.5;
 
     let status: DLRentRow["status"];
     let daysOverdue = 0;
