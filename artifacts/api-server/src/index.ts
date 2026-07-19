@@ -8,7 +8,7 @@ import { runDailyReminders } from "./routes/tenant-notes";
 import { sendFollowUpReminder } from "./routes/contact-checklist";
 import { runFollowupNudgeIfDue } from "./lib/followup-nudge";
 import { syncDirectory } from "./lib/directory-sync";
-import { seedDirectoryFromContacts } from "./lib/directory-seed";
+import { seedDirectoryFromContacts, applyPortfolioFixes } from "./lib/directory-seed";
 import { db, usersTable, pool } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
@@ -373,6 +373,7 @@ server.listen(port, () => {
   void (async () => {
     try {
       await seedDirectoryFromContacts();
+      await applyPortfolioFixes();
     } catch (err) {
       logger.error({ err }, "Directory contacts seed failed");
     }
