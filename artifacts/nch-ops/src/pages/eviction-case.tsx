@@ -43,6 +43,7 @@ export default function EvictionCaseScreen() {
     onError: (e: Error) => toast.error(e.message),
   });
   const [advanceOpen, setAdvanceOpen] = useState(false);
+  const [dismissOpen, setDismissOpen] = useState(false);
   const [writeOffOpen, setWriteOffOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const deleteDoc = useMutation({ mutationFn: (docId: number) => deleteDocument(caseId, docId), onSuccess: () => { invalidate(); toast.success("Deleted"); }, onError: (e: Error) => toast.error(e.message) });
@@ -116,6 +117,12 @@ export default function EvictionCaseScreen() {
           <button type="button" onClick={() => setAdvanceOpen(true)}
             className="w-full mt-3 rounded-lg py-2.5 text-sm font-bold text-white" style={{ backgroundColor: "#B23A2E" }}>
             Advance to {STAGES.find((s) => s.key === next)?.label}
+          </button>
+        )}
+        {c.status !== "closed" && c.status !== "dismissed" && (
+          <button type="button" onClick={() => setDismissOpen(true)}
+            className="w-full mt-2 rounded-lg py-2.5 text-sm font-bold border border-green-600 text-green-700 bg-green-50">
+            ✓ Case Dismissed — Retire
           </button>
         )}
       </div>
@@ -226,6 +233,7 @@ export default function EvictionCaseScreen() {
       {editOpen && <EditCaseSheet c={c} onClose={() => setEditOpen(false)} onDone={() => { setEditOpen(false); invalidate(); void qc.invalidateQueries({ queryKey: readyKey(caseId) }); }} />}
 
       {advanceOpen && next && <AdvanceSheet caseId={caseId} current={c.status} next={next} courtDate={c.courtDate} onClose={() => setAdvanceOpen(false)} onDone={() => { setAdvanceOpen(false); invalidate(); }} />}
+      {dismissOpen && <DismissSheet caseId={caseId} onClose={() => setDismissOpen(false)} onDone={() => { setDismissOpen(false); invalidate(); }} />}
       {writeOffOpen && <WriteOffSheet caseId={caseId} amount={c.balanceAtFiling ?? 0} onClose={() => setWriteOffOpen(false)} onDone={() => { setWriteOffOpen(false); invalidate(); }} />}
       {viewerDoc && <DocumentViewer caseId={caseId} doc={viewerDoc} onClose={() => setViewerDoc(null)} />}
     </div>
@@ -885,6 +893,39 @@ function SetupAgreementSheet({ caseId, signedDoc, existing, onClose, onDone }: {
       <button type="button" onClick={() => save.mutate()} disabled={save.isPending || valid.length === 0}
         className="w-full rounded-xl py-3 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: PLAN_VIOLET }}>
         {save.isPending ? "Saving…" : "Save Payment Agreement"}
+      </button>
+    </Sheet>
+  );
+}
+
+/** Retire a case that was dismissed in court (e.g. tenant paid the balance in
+ *  full before/at the hearing). Records the outcome, closes the case, and the
+ *  property returns to normal circulation. */
+function DismissSheet({ caseId, onClose, onDone }: { caseId: number; onClose: () => void; onDone: () => void }) {
+  const [outcome, setOutcome] = useState("Dismissed — tenant paid balance in full");
+  const [notes, setNotes] = useState("");
+  const mut = useMutation({
+    mutationFn: () => advanceStage(caseId, {
+      status: "dismissed",
+      hearingOutcome: outcome.trim() || "Dismissed",
+      notes: `Case dismissed & retired — ${outcome.trim() || "dismissed"}${notes.trim() ? ` · ${notes.trim()}` : ""}`,
+    }),
+    onSuccess: () => { toast.success("Case dismissed and retired"); onDone(); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const I = "w-full border border-border rounded-lg px-3 py-2 text-sm bg-background mt-0.5 font-normal";
+  return (
+    <Sheet title="Case Dismissed — Retire" onClose={onClose}>
+      <label className="text-xs font-semibold block">Outcome
+        <input value={outcome} onChange={(e) => setOutcome(e.target.value)} className={I} />
+      </label>
+      <label className="text-xs font-semibold block">Notes (optional)
+        <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className={`${I} resize-none`} />
+      </label>
+      <p className="text-xs text-muted-foreground">The case moves to Closed with today's date; the property returns to normal circulation.</p>
+      <button type="button" onClick={() => mut.mutate()} disabled={mut.isPending}
+        className="w-full rounded-xl py-3 text-sm font-bold text-white bg-green-600 disabled:opacity-50">
+        {mut.isPending ? "Saving…" : "Dismiss & Retire Case"}
       </button>
     </Sheet>
   );
