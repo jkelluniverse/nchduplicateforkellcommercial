@@ -11,6 +11,7 @@ import {
   evictionCasesTable,
   evictionDocumentsTable,
   evictionTimelineTable,
+  paymentAgreementsTable,
   rentStatusOverridesTable,
 } from "@workspace/db";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth";
@@ -167,6 +168,9 @@ const STAGE_LABEL: Record<string, string> = {
   court_date_set: "Court Date Set",
   hearing_complete: "Hearing Complete",
   judgment_issued: "Judgment Issued",
+  // Parked: a magistrate-approved payment plan is being tracked (not a pipeline
+  // stage — the case sits here until the plan completes or defaults).
+  payment_plan: "Payment Plan",
   vacated: "Vacated",
   closed: "Closed",
   dismissed: "Dismissed",
@@ -223,7 +227,15 @@ function serializeCase(c: typeof evictionCasesTable.$inferSelect) {
 // GET /api/evictions — all cases (active + closed) for the list + home indicator.
 router.get("/evictions", requireAuth, async (_req, res): Promise<void> => {
   const rows = await db.select().from(evictionCasesTable).orderBy(desc(evictionCasesTable.createdAt));
-  const cases = rows.map(serializeCase);
+  // Latest payment-agreement status per case (one cheap grouped query) so the
+  // list can badge Payment Plan / PLAN DEFAULTED without N+1 lookups.
+  const planByCase = new Map<number, string>();
+  const agreements = await db
+    .select({ evictionCaseId: paymentAgreementsTable.evictionCaseId, status: paymentAgreementsTable.status })
+    .from(paymentAgreementsTable)
+    .orderBy(paymentAgreementsTable.id);
+  for (const a of agreements) planByCase.set(a.evictionCaseId, a.status); // last (newest) wins
+  const cases = rows.map((c) => ({ ...serializeCase(c), paymentPlanStatus: planByCase.get(c.id) ?? null }));
   const isClosed = (s: string) => s === "closed" || s === "dismissed";
   res.json({
     active: cases.filter((c) => !isClosed(c.status)),

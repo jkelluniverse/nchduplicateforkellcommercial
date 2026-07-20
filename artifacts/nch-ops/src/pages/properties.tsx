@@ -22,6 +22,9 @@ interface LedgerProperty {
   status: LedgerListStatus;
   daysLate: number;
   hasSituation: boolean;
+  // An ACTIVE court payment agreement (magistrate-approved installment plan)
+  // exists for this address — the property circulates normally while tracked.
+  hasPaymentPlan?: boolean;
   // For an "expected" row: ISO due date + the expected payment amount (this
   // month's rent). The live balance may be $0 if the charge hasn't posted yet.
   expectedDate?: string | null;
@@ -635,6 +638,11 @@ export default function Properties() {
                       {prop.hasSituation && (
                         <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-primary/10 text-primary">
                           Situation
+                        </span>
+                      )}
+                      {prop.hasPaymentPlan && (
+                        <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">
+                          Payment plan
                         </span>
                       )}
                     </div>

@@ -11,8 +11,8 @@
  * rent charge drives the balance negative (tenant owes) and a payment brings it
  * back toward zero.
  */
-import { ne } from "drizzle-orm";
-import { db, propertiesTable, tenantPaymentNotesTable } from "@workspace/db";
+import { eq, ne } from "drizzle-orm";
+import { db, propertiesTable, tenantPaymentNotesTable, paymentAgreementsTable } from "@workspace/db";
 import * as rentec from "./rentec";
 import { getTrackerHistoryForAddress, type LedgerHistory } from "./rent-ledger";
 
@@ -202,6 +202,7 @@ export interface LedgerPropertyRow {
   status: LedgerListStatus;
   daysLate: number; // 0 when not overdue (Rentec rent-status aging)
   hasSituation: boolean; // an open Payment Situation exists for this address
+  hasPaymentPlan: boolean; // an ACTIVE court payment agreement exists for this address
   // For an "expected" row: ISO date this month's rent is due (custom due day)
   // and the expected payment amount (this month's rent). The tenant is expected
   // to pay on that date; the charge may not have posted yet, so the live balance
@@ -222,15 +223,21 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
   const month = now.getMonth() + 1;
   const year = now.getFullYear();
 
-  // Directory properties (the click-through ids) + open situations, always.
-  const [dirProps, openNotes] = await Promise.all([
+  // Directory properties (the click-through ids) + open situations + active
+  // court payment agreements, always.
+  const [dirProps, openNotes, activePlans] = await Promise.all([
     db.select().from(propertiesTable).orderBy(propertiesTable.address),
     db
       .select({ address: tenantPaymentNotesTable.propertyAddress })
       .from(tenantPaymentNotesTable)
       .where(ne(tenantPaymentNotesTable.status, "resolved")),
+    db
+      .select({ address: paymentAgreementsTable.propertyAddress })
+      .from(paymentAgreementsTable)
+      .where(eq(paymentAgreementsTable.status, "active")),
   ]);
   const situationKeys = new Set(openNotes.map((n) => streetKey(n.address)));
+  const paymentPlanKeys = new Set(activePlans.map((p) => streetKey(p.address)));
 
   // Live Rentec state, keyed by street so it joins to directory addresses.
   // outstanding/overdue come from authoritative lease balances; status + aging
@@ -321,6 +328,7 @@ export async function getLedgerList(q?: string): Promise<LedgerPropertyRow[]> {
       status,
       daysLate,
       hasSituation: situationKeys.has(k),
+      hasPaymentPlan: paymentPlanKeys.has(k),
       expectedDate: isExpected ? age?.expectedDate ?? null : null,
       expectedAmount: isExpected ? age?.expectedAmount ?? null : null,
     };

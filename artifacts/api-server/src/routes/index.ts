@@ -14,6 +14,7 @@ import collectionRouter from "./collection";
 import contactChecklistRouter from "./contact-checklist";
 import followupRouter from "./followup";
 import evictionsRouter from "./evictions";
+import paymentAgreementsRouter from "./payment-agreements";
 import documentsRouter from "./documents";
 
 const router: IRouter = Router();
@@ -33,6 +34,7 @@ router.use(collectionRouter);
 router.use(contactChecklistRouter);
 router.use(followupRouter);
 router.use(evictionsRouter);
+router.use(paymentAgreementsRouter);
 router.use(documentsRouter);
 
 export default router;

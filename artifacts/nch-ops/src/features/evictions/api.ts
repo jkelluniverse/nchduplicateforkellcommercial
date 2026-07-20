@@ -46,6 +46,45 @@ export interface EvictionCase {
   attorneySentAt?: string | null;
   contractDriveUrl?: string | null;
   contractDriveFileId?: string | null;
+  // Latest court payment agreement status for this case (list badge), if any.
+  paymentPlanStatus?: string | null;
+}
+
+// ─── Court Payment Agreement (magistrate-approved installment plan) ──────────
+export interface PaymentAgreement {
+  id: number;
+  evictionCaseId: number;
+  propertyAddress: string;
+  tenantName: string;
+  agreementDate: string | null;
+  courtRef: string | null;
+  notes: string | null;
+  status: string; // active | completed | defaulted | cancelled
+  setoutFiledAt: string | null;
+  createdAt: string | null;
+}
+export interface Installment {
+  id: number;
+  dueDate: string;
+  amount: number;
+  status: string; // pending | paid | missed
+  paidDate: string | null;
+  paidAmount: number | null;
+  manuallyMarked: boolean;
+  notes: string | null;
+}
+export const paymentAgreementKey = (caseId: number) => ["payment-agreement", caseId] as const;
+export function fetchPaymentAgreement(caseId: number): Promise<{ agreement: PaymentAgreement | null; installments: Installment[] }> {
+  return api(`/evictions/${caseId}/payment-agreement`);
+}
+export function createPaymentAgreement(caseId: number, body: { agreementDate: string; courtRef?: string; notes?: string; installments: { dueDate: string; amount: number }[] }): Promise<{ id: number }> {
+  return api(`/evictions/${caseId}/payment-agreement`, { method: "POST", body: JSON.stringify(body) });
+}
+export function markInstallmentPaid(aid: number, iid: number, body: { paidDate?: string; amount?: number; notes?: string }): Promise<{ ok: true }> {
+  return api(`/payment-agreements/${aid}/installments/${iid}/mark-paid`, { method: "POST", body: JSON.stringify(body) });
+}
+export function setAgreementStatus(aid: number, body: { status: "active" | "completed" | "defaulted" | "cancelled"; setoutFiled?: boolean; notes?: string }): Promise<{ ok: true }> {
+  return api(`/payment-agreements/${aid}/status`, { method: "POST", body: JSON.stringify(body) });
 }
 
 export interface ReadyStatus {

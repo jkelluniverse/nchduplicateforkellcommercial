@@ -18,6 +18,8 @@ function CaseCard({ c }: { c: EvictionCase }) {
   const sub = c.courtDate
     ? `Court: ${fmtDate(c.courtDate)}${c.courtTime ? ` ${c.courtTime}` : ""}`
     : c.noticeFiledDate ? `Notice filed ${fmtDate(c.noticeFiledDate)}` : "";
+  const onPlan = c.status === "payment_plan";
+  const planDefaulted = c.paymentPlanStatus === "defaulted";
   return (
     <Link href={`/evictions/${c.id}`}>
       <div className="flex items-center gap-3 rounded-xl border border-border p-3 hover:bg-muted/50 cursor-pointer">
@@ -25,7 +27,15 @@ function CaseCard({ c }: { c: EvictionCase }) {
         <div className="flex-1 min-w-0">
           <p className="font-semibold truncate">{c.propertyAddress}</p>
           <p className="text-xs text-muted-foreground truncate">{c.tenantName}{sub ? ` · ${sub}` : ""}</p>
-          <p className="text-[11px] font-semibold text-[#B23A2E] mt-0.5">Stage: {c.statusLabel}{c.writtenOffAt ? " · Written off" : ""}</p>
+          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+            {!onPlan && <p className="text-[11px] font-semibold text-[#B23A2E]">Stage: {c.statusLabel}{c.writtenOffAt ? " · Written off" : ""}</p>}
+            {onPlan && (
+              <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 text-violet-700">Payment Plan</span>
+            )}
+            {onPlan && planDefaulted && (
+              <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-600 text-white">Plan Defaulted</span>
+            )}
+          </div>
         </div>
         <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
       </div>

@@ -2,12 +2,14 @@ import { useRef, useState } from "react";
 import { useParams, Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChevronLeft, Scale, FileText, Upload, X, Printer, Ban, Trash2, Camera, Image as ImageIcon, Clock, Mail, Search, Check, Pencil } from "lucide-react";
+import { ChevronLeft, Scale, FileText, Upload, X, Printer, Ban, Trash2, Camera, Image as ImageIcon, Clock, Mail, Search, Check, Pencil, Plus, AlertTriangle, Landmark } from "lucide-react";
 import {
   fetchEviction, advanceStage, writeOffBalance, uploadDocument, accountBalance, hardDeleteCase,
   fetchReady, findContract, sendAttorney, readyKey, deleteDocument, updateEviction,
   downloadBase64Pdf, fileToBase64, documentContent, STAGES, evictionKey, evictionsKey,
+  fetchPaymentAgreement, createPaymentAgreement, markInstallmentPaid, setAgreementStatus, paymentAgreementKey,
   type TimelineEntry, type CaseDocument, type ReadyStatus, type EvictionCase,
+  type Installment,
 } from "@/features/evictions/api";
 import { stampPhoto, proofTimestamp, readFileAsDataUrl, driveThumb, driveFull } from "@/features/evictions/stamp";
 
@@ -27,6 +29,7 @@ const NEXT: Record<string, string> = {
   vacated: "closed",
 };
 const stageIndex = (s: string) => Math.max(0, STAGES.findIndex((x) => x.key === s));
+const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 
 export default function EvictionCaseScreen() {
   const { id } = useParams();
@@ -58,7 +61,11 @@ export default function EvictionCaseScreen() {
 
   if (isLoading || !data) return <div className="p-8 text-center text-muted-foreground">Loading…</div>;
   const c = data.case;
-  const curIdx = stageIndex(c.status);
+  // A parked 'payment_plan' case is not a pipeline stage: no dot is highlighted
+  // (curIdx -1 keeps every `i <= curIdx` check false) — a violet chip shows the
+  // state instead. NEXT has no entry for it, so no advance button renders.
+  const isPaymentPlan = c.status === "payment_plan";
+  const curIdx = isPaymentPlan ? -1 : stageIndex(c.status);
   const next = NEXT[c.status];
 
   return (
@@ -75,6 +82,13 @@ export default function EvictionCaseScreen() {
       </div>
 
       {/* Pipeline */}
+      {isPaymentPlan && (
+        <div className="px-4 pt-4">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-300 bg-violet-100 text-violet-700 px-3 py-1 text-xs font-bold uppercase tracking-wide">
+            <Landmark className="w-3.5 h-3.5" /> Payment Plan
+          </span>
+        </div>
+      )}
       <div className="px-4 pt-4 overflow-x-auto">
         <div className="flex items-center gap-1 min-w-max">
           {STAGES.map((s, i) => (
@@ -121,6 +135,15 @@ export default function EvictionCaseScreen() {
           </button>
         </div>
       </div>
+
+      {/* Court Payment Agreement */}
+      <PaymentAgreementSection
+        caseId={caseId}
+        caseStatus={c.status}
+        documents={data.documents}
+        onChanged={invalidate}
+        onViewDoc={setViewerDoc}
+      />
 
       {/* Notice Posted — Proof of Service */}
       <NoticePostedSection
@@ -483,7 +506,7 @@ function EditCaseSheet({ c, onClose, onDone }: { c: EvictionCase; onClose: () =>
         </label>
         <label className="text-xs font-semibold">Stage
           <select value={f.status} onChange={(e) => set("status", e.target.value)} className={I}>
-            {["notice_filed", "awaiting_court_date", "court_date_set", "hearing_complete", "judgment_issued", "vacated", "closed", "dismissed"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+            {["notice_filed", "awaiting_court_date", "court_date_set", "hearing_complete", "judgment_issued", "payment_plan", "vacated", "closed", "dismissed"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
           </select>
         </label>
       </div>
@@ -590,6 +613,268 @@ function FileForCourtSection({ caseId, onChanged }: { caseId: number; onChanged:
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Court Payment Agreement ─────────────────────────────────────────────────
+
+const PLAN_VIOLET = "#7C3AED";
+
+function InstallmentChip({ inst }: { inst: Installment }) {
+  if (inst.status === "paid") {
+    return <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-green-100 text-green-700">Paid{inst.paidDate ? ` ${fmtDate(inst.paidDate)}` : ""}{inst.manuallyMarked ? " ✓" : ""}</span>;
+  }
+  if (inst.status === "missed") {
+    return <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-600 text-white">Missed</span>;
+  }
+  return <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-muted text-muted-foreground">Pending</span>;
+}
+
+function PaymentAgreementSection({ caseId, caseStatus, documents, onChanged, onViewDoc }: {
+  caseId: number; caseStatus: string; documents: CaseDocument[]; onChanged: () => void; onViewDoc: (d: CaseDocument) => void;
+}) {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: paymentAgreementKey(caseId), queryFn: () => fetchPaymentAgreement(caseId) });
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [markInst, setMarkInst] = useState<Installment | null>(null);
+  const signedRef = useRef<HTMLInputElement>(null);
+  const refresh = () => { void qc.invalidateQueries({ queryKey: paymentAgreementKey(caseId) }); onChanged(); };
+
+  const a = data?.agreement ?? null;
+  const installments = data?.installments ?? [];
+  const signedDoc = documents.find((d) => d.documentType === "payment_agreement");
+
+  const statusMut = useMutation({
+    mutationFn: (body: { status: "active" | "completed" | "defaulted" | "cancelled"; setoutFiled?: boolean; notes?: string }) => setAgreementStatus(a!.id, body),
+    onSuccess: (_r, body) => { refresh(); toast.success(body.status === "defaulted" ? "Set-out filing recorded" : `Agreement ${body.status}`); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const attachSigned = useMutation({
+    mutationFn: async (file: File) => {
+      const b64 = await fileToBase64(file);
+      return uploadDocument(caseId, { documentName: "Court Payment Agreement (signed)", documentType: "payment_agreement", fileBase64: b64 });
+    },
+    onSuccess: () => { refresh(); toast.success("Signed agreement attached"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  if (!data) return null;
+  const closed = caseStatus === "closed" || caseStatus === "dismissed";
+
+  // ── No agreement yet ──
+  if (!a) {
+    if (closed) return null;
+    const prominent = caseStatus === "hearing_complete" || caseStatus === "judgment_issued";
+    return (
+      <div className="mx-4 mt-4 rounded-xl border border-border p-3">
+        <p className="text-[11px] font-bold flex items-center gap-1" style={{ color: PLAN_VIOLET }}><Landmark className="w-3.5 h-3.5" /> COURT PAYMENT AGREEMENT</p>
+        <p className="text-xs text-muted-foreground mt-1 mb-2">Magistrate-approved installment plan signed after the hearing. Missed payments are detected automatically from the Rentec ledger.</p>
+        <button type="button" onClick={() => setSetupOpen(true)}
+          className={`w-full flex items-center justify-center gap-1.5 rounded-lg py-2.5 text-sm font-bold ${prominent ? "text-white" : "border border-violet-300 text-violet-700 bg-violet-50"}`}
+          style={prominent ? { backgroundColor: PLAN_VIOLET } : undefined}>
+          <Plus className="w-4 h-4" /> Set Up Payment Agreement
+        </button>
+        {setupOpen && <SetupAgreementSheet caseId={caseId} signedDoc={signedDoc} onClose={() => setSetupOpen(false)} onDone={() => { setSetupOpen(false); refresh(); }} />}
+      </div>
+    );
+  }
+
+  // ── Agreement exists ──
+  const paidInst = installments.filter((i) => i.status === "paid");
+  const paidTotal = paidInst.reduce((s, i) => s + (i.paidAmount ?? i.amount), 0);
+  const total = installments.reduce((s, i) => s + i.amount, 0);
+  const anyMissed = installments.some((i) => i.status === "missed");
+  const isActive = a.status === "active";
+
+  return (
+    <div className="mx-4 mt-4 rounded-xl border border-border p-3">
+      <p className="text-[11px] font-bold flex items-center gap-1" style={{ color: PLAN_VIOLET }}><Landmark className="w-3.5 h-3.5" /> COURT PAYMENT AGREEMENT</p>
+
+      {/* Missed-payment alert — the legal trigger for a set-out */}
+      {anyMissed && isActive && (
+        <div className="mt-2 rounded-lg border border-red-300 bg-red-50 p-2.5 space-y-2">
+          <p className="text-sm font-semibold text-red-700 flex items-start gap-1.5"><AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" /> Payment missed — per the court agreement you may file for a set-out date.</p>
+          <button type="button" disabled={statusMut.isPending}
+            onClick={() => { if (confirm("Record that the set-out has been filed? This marks the payment plan as DEFAULTED.")) statusMut.mutate({ status: "defaulted", setoutFiled: true }); }}
+            className="w-full rounded-lg py-2 text-sm font-bold text-white bg-red-600 disabled:opacity-50">
+            Record Set-Out Filed
+          </button>
+        </div>
+      )}
+
+      {/* Status line */}
+      <div className="mt-2 text-sm">
+        {a.status === "defaulted" ? (
+          <p className="font-bold text-red-600">DEFAULTED{a.setoutFiledAt ? ` — set-out filed ${fmtDateTime(a.setoutFiledAt)}` : " — filing for set-out"}</p>
+        ) : a.status === "completed" ? (
+          <p className="font-bold text-green-700">COMPLETED — all {installments.length} payments received</p>
+        ) : a.status === "cancelled" ? (
+          <p className="font-semibold text-muted-foreground">Cancelled</p>
+        ) : (
+          <p>Active — <span className="font-semibold">{paidInst.length} of {installments.length} paid</span> · {money(paidTotal)} of {money(total)}</p>
+        )}
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Agreed {fmtDate(a.agreementDate)}{a.courtRef ? ` · ${a.courtRef}` : ""}
+        </p>
+        {a.notes && <p className="text-xs text-muted-foreground mt-0.5">{a.notes}</p>}
+      </div>
+
+      {/* Signed document */}
+      {signedDoc ? (
+        <button type="button" onClick={() => onViewDoc(signedDoc)} className="mt-2 flex items-center gap-1.5 rounded-full border border-violet-300 bg-violet-50 text-violet-700 px-3 py-1 text-xs font-semibold">
+          <FileText className="w-3.5 h-3.5" /> Signed agreement — view
+        </button>
+      ) : (
+        <button type="button" onClick={() => signedRef.current?.click()} disabled={attachSigned.isPending} className="mt-2 flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-semibold text-muted-foreground disabled:opacity-50">
+          <Upload className="w-3.5 h-3.5" /> {attachSigned.isPending ? "Attaching…" : "Attach signed agreement"}
+        </button>
+      )}
+      <input ref={signedRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) attachSigned.mutate(f); e.target.value = ""; }} />
+
+      {/* Installment schedule */}
+      <div className="mt-3 space-y-1.5">
+        {installments.map((inst, idx) => (
+          <div key={inst.id} className={`flex items-center gap-2 rounded-lg border p-2 ${inst.status === "missed" ? "border-red-300 bg-red-50" : "border-border"}`}>
+            <span className="text-xs text-muted-foreground w-5 shrink-0 tabular-nums">{idx + 1}.</span>
+            <div className="flex-1 min-w-0">
+              <p className={`text-sm ${inst.status === "missed" ? "font-bold text-red-700" : ""}`}>{fmtDate(inst.dueDate)} · <span className="font-semibold">{money(inst.amount)}</span></p>
+              {inst.notes && <p className="text-[11px] text-muted-foreground truncate">{inst.notes}</p>}
+            </div>
+            <InstallmentChip inst={inst} />
+            {inst.status !== "paid" && (
+              <button type="button" onClick={() => setMarkInst(inst)} className="text-xs font-semibold text-violet-700 border border-violet-300 rounded-lg px-2 py-1 shrink-0">Mark paid</button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Subtle admin actions */}
+      <div className="mt-3 flex gap-3 text-xs text-muted-foreground">
+        {isActive && (
+          <button type="button" disabled={statusMut.isPending} className="underline"
+            onClick={() => { if (confirm("Cancel this payment agreement?")) statusMut.mutate({ status: "cancelled" }); }}>
+            Cancel agreement
+          </button>
+        )}
+        {(a.status === "cancelled" || a.status === "defaulted") && (
+          <button type="button" disabled={statusMut.isPending} className="underline"
+            onClick={() => { if (confirm("Reactivate this payment agreement? Auto-tracking resumes.")) statusMut.mutate({ status: "active" }); }}>
+            Reactivate agreement
+          </button>
+        )}
+        {a.status === "cancelled" && !closed && (
+          <button type="button" className="underline" onClick={() => setSetupOpen(true)}>Set up new agreement</button>
+        )}
+      </div>
+
+      {setupOpen && <SetupAgreementSheet caseId={caseId} signedDoc={signedDoc} onClose={() => setSetupOpen(false)} onDone={() => { setSetupOpen(false); refresh(); }} />}
+
+      {markInst && <MarkPaidSheet agreementId={a.id} inst={markInst} onClose={() => setMarkInst(null)} onDone={() => { setMarkInst(null); refresh(); }} />}
+    </div>
+  );
+}
+
+function SetupAgreementSheet({ caseId, signedDoc, onClose, onDone }: { caseId: number; signedDoc: CaseDocument | undefined; onClose: () => void; onDone: () => void }) {
+  // Plans are typically ~6 months of payments — start with 6 empty rows.
+  const [rows, setRows] = useState<{ dueDate: string; amount: string }[]>(Array.from({ length: 6 }, () => ({ dueDate: "", amount: "" })));
+  const [agreementDate, setAgreementDate] = useState(todayISO());
+  const [courtRef, setCourtRef] = useState("");
+  const [notes, setNotes] = useState("");
+  const [uploaded, setUploaded] = useState<string | null>(signedDoc ? signedDoc.documentName : null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const uploadSigned = useMutation({
+    mutationFn: async (file: File) => {
+      const b64 = await fileToBase64(file);
+      return uploadDocument(caseId, { documentName: "Court Payment Agreement (signed)", documentType: "payment_agreement", fileBase64: b64 });
+    },
+    onSuccess: () => { setUploaded("Court Payment Agreement (signed)"); toast.success("Signed agreement uploaded"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const valid = rows
+    .map((r) => ({ dueDate: r.dueDate, amount: Number(r.amount) }))
+    .filter((r) => r.dueDate && Number.isFinite(r.amount) && r.amount > 0);
+  const total = valid.reduce((s, r) => s + r.amount, 0);
+
+  const save = useMutation({
+    mutationFn: () => createPaymentAgreement(caseId, {
+      agreementDate, courtRef: courtRef.trim() || undefined, notes: notes.trim() || undefined,
+      installments: valid,
+    }),
+    onSuccess: () => { toast.success("Payment agreement set up — case moved to Payment Plan"); onDone(); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const setRow = (i: number, k: "dueDate" | "amount", v: string) => setRows((p) => p.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  const I = "w-full border border-border rounded-lg px-3 py-2 text-sm bg-background mt-0.5 font-normal";
+
+  return (
+    <Sheet title="Set Up Payment Agreement" onClose={onClose}>
+      {/* 1. Signed magistrate agreement */}
+      <div>
+        <p className="text-xs font-semibold">Signed magistrate agreement</p>
+        {uploaded ? (
+          <div className="mt-1 flex items-center gap-2 rounded-lg border border-border p-2.5 text-sm"><FileText className="w-4 h-4 text-violet-700 shrink-0" /> <span className="flex-1 truncate">{uploaded}</span> <Check className="w-4 h-4 text-green-600 shrink-0" /></div>
+        ) : (
+          <button type="button" onClick={() => fileRef.current?.click()} disabled={uploadSigned.isPending} className="mt-1 w-full flex items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold border border-border bg-background disabled:opacity-50">
+            <Upload className="w-4 h-4" /> {uploadSigned.isPending ? "Uploading…" : "Upload Signed Agreement"}
+          </button>
+        )}
+        <input ref={fileRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadSigned.mutate(f); e.target.value = ""; }} />
+      </div>
+
+      {/* 2. Agreement details */}
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs font-semibold">Agreement date<input type="date" value={agreementDate} onChange={(e) => setAgreementDate(e.target.value)} className={I} /></label>
+        <label className="text-xs font-semibold">Court ref (optional)<input value={courtRef} onChange={(e) => setCourtRef(e.target.value)} placeholder="Case / magistrate ref" className={I} /></label>
+      </div>
+      <label className="text-xs font-semibold block">Notes<textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className={`${I} resize-none`} /></label>
+
+      {/* 3. Installment schedule */}
+      <div>
+        <p className="text-xs font-semibold mb-1">Payment schedule</p>
+        <div className="space-y-2">
+          {rows.map((r, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input type="date" value={r.dueDate} onChange={(e) => setRow(i, "dueDate", e.target.value)} className="flex-1 border border-border rounded-lg px-2 py-2 text-sm bg-background" />
+              <input type="number" inputMode="decimal" value={r.amount} onChange={(e) => setRow(i, "amount", e.target.value)} placeholder="$" className="w-24 border border-border rounded-lg px-2 py-2 text-sm bg-background" />
+              <button type="button" onClick={() => setRows((p) => p.filter((_, j) => j !== i))} className="p-1 text-muted-foreground"><X className="w-4 h-4" /></button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => setRows((p) => [...p, { dueDate: "", amount: "" }])} className="mt-2 text-xs font-semibold text-violet-700">+ Add payment</button>
+        <p className="text-sm mt-1">Total: <span className="font-bold">{money(total)}</span>{valid.length > 0 ? ` over ${valid.length} payments` : ""}</p>
+      </div>
+
+      <button type="button" onClick={() => save.mutate()} disabled={save.isPending || valid.length === 0}
+        className="w-full rounded-xl py-3 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: PLAN_VIOLET }}>
+        {save.isPending ? "Saving…" : "Save Payment Agreement"}
+      </button>
+    </Sheet>
+  );
+}
+
+function MarkPaidSheet({ agreementId, inst, onClose, onDone }: { agreementId: number; inst: Installment; onClose: () => void; onDone: () => void }) {
+  const [paidDate, setPaidDate] = useState(todayISO());
+  const [amount, setAmount] = useState(String(inst.amount));
+  const [notes, setNotes] = useState("");
+  const mut = useMutation({
+    mutationFn: () => markInstallmentPaid(agreementId, inst.id, { paidDate, amount: amount === "" ? undefined : Number(amount), notes: notes.trim() || undefined }),
+    onSuccess: () => { toast.success("Installment marked paid"); onDone(); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const I = "w-full border border-border rounded-lg px-3 py-2 text-sm bg-background mt-0.5 font-normal";
+  return (
+    <Sheet title="Mark Installment Paid" onClose={onClose}>
+      <p className="text-sm text-muted-foreground">{money(inst.amount)} due {fmtDate(inst.dueDate)} — manual override for cash / off-ledger payments.</p>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs font-semibold">Paid date<input type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} className={I} /></label>
+        <label className="text-xs font-semibold">Amount ($)<input type="number" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={I} /></label>
+      </div>
+      <label className="text-xs font-semibold block">Note<input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. paid in cash" className={I} /></label>
+      <button type="button" onClick={() => mut.mutate()} disabled={mut.isPending} className="w-full rounded-xl py-3 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: PLAN_VIOLET }}>{mut.isPending ? "Saving…" : "Mark Paid"}</button>
+    </Sheet>
   );
 }
 

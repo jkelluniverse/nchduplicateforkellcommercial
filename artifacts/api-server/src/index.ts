@@ -7,6 +7,7 @@ import { runCourtReminders } from "./routes/evictions";
 import { runDailyReminders } from "./routes/tenant-notes";
 import { sendFollowUpReminder } from "./routes/contact-checklist";
 import { runFollowupNudgeIfDue } from "./lib/followup-nudge";
+import { runPaymentAgreementCheck } from "./lib/payment-agreement-check";
 import { syncDirectory } from "./lib/directory-sync";
 import { seedDirectoryFromContacts, applyPortfolioFixes } from "./lib/directory-seed";
 import { db, usersTable, pool } from "@workspace/db";
@@ -207,6 +208,38 @@ async function createEvictionTables() {
         created_by TEXT NOT NULL DEFAULT 'jacob'
       )
     `);
+    // Court Payment Agreements — magistrate-approved installment plans signed
+    // after a hearing. status: active | completed | defaulted | cancelled.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS payment_agreements (
+        id SERIAL PRIMARY KEY,
+        eviction_case_id INTEGER REFERENCES eviction_cases(id) ON DELETE CASCADE,
+        property_address TEXT NOT NULL,
+        tenant_name TEXT NOT NULL,
+        agreement_date DATE,
+        court_ref TEXT,
+        notes TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        setout_filed_at TIMESTAMPTZ,
+        created_by TEXT DEFAULT 'jacob',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    // Installment schedule. status: pending | paid | missed.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS payment_installments (
+        id SERIAL PRIMARY KEY,
+        agreement_id INTEGER REFERENCES payment_agreements(id) ON DELETE CASCADE,
+        due_date DATE NOT NULL,
+        amount NUMERIC(10,2) NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        paid_date DATE,
+        paid_amount NUMERIC(10,2),
+        manually_marked BOOLEAN DEFAULT FALSE,
+        notes TEXT
+      )
+    `);
     logger.info("eviction tables ensured");
   } catch (err) {
     logger.error({ err }, "Failed to ensure eviction tables");
@@ -301,8 +334,13 @@ server.listen(port, () => {
   // Ensure follow-up nudge tables exist (idempotent).
   void createFollowupTables();
 
-  // Ensure eviction tracker tables exist (idempotent).
-  void createEvictionTables();
+  // Ensure eviction tracker tables exist (idempotent), then run the payment-
+  // agreement auto-check (missed-installment detection) on boot + hourly.
+  void (async () => {
+    await createEvictionTables();
+    await runPaymentAgreementCheck();
+  })();
+  setInterval(() => { void runPaymentAgreementCheck(); }, 60 * 60 * 1000);
 
   // Create the properties table + seed the operator login (idempotent).
   void (async () => {
