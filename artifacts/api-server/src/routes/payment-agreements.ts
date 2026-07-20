@@ -160,3 +160,86 @@ router.post("/payment-agreements/:aid/status", requireAuth, requireRole("jacob")
 });
 
 export default router;
+
+// PUT /api/evictions/:id/payment-agreement — full edit (Jacob only). Updates
+// the agreement fields and REPLACES the schedule: installments carrying an id
+// are updated in place (keeping paid/manual state unless the row changed),
+// ones without an id are inserted, and any existing row not present in the
+// payload is deleted. Editing a date/amount resets an AUTO-set status back to
+// 'pending' so the hourly ledger check re-evaluates it; a manual "Mark paid"
+// is preserved.
+router.put("/evictions/:id/payment-agreement", requireAuth, requireRole("jacob"), async (req: AuthRequest, res): Promise<void> => {
+  const id = parseInt(String(req.params.id), 10);
+  if (!id || isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  try {
+    const [agreement] = await db
+      .select()
+      .from(paymentAgreementsTable)
+      .where(eq(paymentAgreementsTable.evictionCaseId, id))
+      .orderBy(desc(paymentAgreementsTable.id))
+      .limit(1);
+    if (!agreement) { res.status(404).json({ error: "No payment agreement for this case" }); return; }
+
+    const body = req.body as {
+      agreementDate?: string; courtRef?: string | null; notes?: string | null;
+      installments?: Array<{ id?: number; dueDate: string; amount: number; notes?: string | null }>;
+    };
+
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (body.agreementDate !== undefined) patch["agreementDate"] = body.agreementDate;
+    if (body.courtRef !== undefined) patch["courtRef"] = body.courtRef || null;
+    if (body.notes !== undefined) patch["notes"] = body.notes || null;
+    await db.update(paymentAgreementsTable).set(patch).where(eq(paymentAgreementsTable.id, agreement.id));
+
+    if (Array.isArray(body.installments)) {
+      const incoming = body.installments.filter((i) => i.dueDate && num(i.amount) > 0);
+      if (incoming.length === 0) { res.status(400).json({ error: "At least one installment required" }); return; }
+      const existing = await db
+        .select()
+        .from(paymentInstallmentsTable)
+        .where(eq(paymentInstallmentsTable.agreementId, agreement.id));
+      const byId = new Map(existing.map((r) => [r.id, r]));
+      const keptIds = new Set<number>();
+      for (const inc of incoming) {
+        const cur = inc.id != null ? byId.get(inc.id) : undefined;
+        if (cur) {
+          keptIds.add(cur.id);
+          const changed = cur.dueDate !== inc.dueDate || num(cur.amount) !== num(inc.amount);
+          await db.update(paymentInstallmentsTable).set({
+            dueDate: inc.dueDate,
+            amount: String(num(inc.amount)),
+            notes: inc.notes !== undefined ? inc.notes || null : cur.notes,
+            // A changed date/amount invalidates an AUTO verdict — back to
+            // pending for the checker. Manual marks survive edits.
+            ...(changed && !cur.manuallyMarked
+              ? { status: "pending", paidDate: null, paidAmount: null }
+              : {}),
+          }).where(eq(paymentInstallmentsTable.id, cur.id));
+        } else {
+          await db.insert(paymentInstallmentsTable).values({
+            agreementId: agreement.id,
+            dueDate: inc.dueDate,
+            amount: String(num(inc.amount)),
+            notes: inc.notes || null,
+          });
+        }
+      }
+      for (const row of existing) {
+        if (!keptIds.has(row.id)) {
+          await db.delete(paymentInstallmentsTable).where(eq(paymentInstallmentsTable.id, row.id));
+        }
+      }
+    }
+
+    await addTimeline(id, "Payment agreement edited.", req.user?.username ?? "jacob");
+    const [updated] = await db.select().from(paymentAgreementsTable).where(eq(paymentAgreementsTable.id, agreement.id));
+    const installments = await db
+      .select()
+      .from(paymentInstallmentsTable)
+      .where(eq(paymentInstallmentsTable.agreementId, agreement.id))
+      .orderBy(asc(paymentInstallmentsTable.dueDate), asc(paymentInstallmentsTable.id));
+    res.json({ agreement: updated ? serializeAgreement(updated) : null, installments: installments.map(serializeInstallment) });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Failed to update agreement" });
+  }
+});

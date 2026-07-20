@@ -7,7 +7,7 @@ import {
   fetchEviction, advanceStage, writeOffBalance, uploadDocument, accountBalance, hardDeleteCase,
   fetchReady, findContract, sendAttorney, readyKey, deleteDocument, updateEviction,
   downloadBase64Pdf, fileToBase64, documentContent, STAGES, evictionKey, evictionsKey,
-  fetchPaymentAgreement, createPaymentAgreement, markInstallmentPaid, setAgreementStatus, paymentAgreementKey,
+  fetchPaymentAgreement, createPaymentAgreement, updatePaymentAgreement, markInstallmentPaid, setAgreementStatus, paymentAgreementKey,
   type TimelineEntry, type CaseDocument, type ReadyStatus, type EvictionCase,
   type Installment,
 } from "@/features/evictions/api";
@@ -636,6 +636,7 @@ function PaymentAgreementSection({ caseId, caseStatus, documents, onChanged, onV
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: paymentAgreementKey(caseId), queryFn: () => fetchPaymentAgreement(caseId) });
   const [setupOpen, setSetupOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [markInst, setMarkInst] = useState<Installment | null>(null);
   const signedRef = useRef<HTMLInputElement>(null);
   const refresh = () => { void qc.invalidateQueries({ queryKey: paymentAgreementKey(caseId) }); onChanged(); };
@@ -688,7 +689,13 @@ function PaymentAgreementSection({ caseId, caseStatus, documents, onChanged, onV
 
   return (
     <div className="mx-4 mt-4 rounded-xl border border-border p-3">
-      <p className="text-[11px] font-bold flex items-center gap-1" style={{ color: PLAN_VIOLET }}><Landmark className="w-3.5 h-3.5" /> COURT PAYMENT AGREEMENT</p>
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] font-bold flex items-center gap-1" style={{ color: PLAN_VIOLET }}><Landmark className="w-3.5 h-3.5" /> COURT PAYMENT AGREEMENT</p>
+        <button type="button" onClick={() => setEditOpen(true)} aria-label="Edit agreement"
+          className="p-1.5 rounded-full border border-border text-muted-foreground">
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      </div>
 
       {/* Missed-payment alert — the legal trigger for a set-out */}
       {anyMissed && isActive && (
@@ -768,18 +775,40 @@ function PaymentAgreementSection({ caseId, caseStatus, documents, onChanged, onV
       </div>
 
       {setupOpen && <SetupAgreementSheet caseId={caseId} signedDoc={signedDoc} onClose={() => setSetupOpen(false)} onDone={() => { setSetupOpen(false); refresh(); }} />}
+      {editOpen && (
+        <SetupAgreementSheet
+          caseId={caseId}
+          signedDoc={signedDoc}
+          existing={{ agreement: a, installments }}
+          onClose={() => setEditOpen(false)}
+          onDone={() => { setEditOpen(false); refresh(); }}
+        />
+      )}
 
       {markInst && <MarkPaidSheet agreementId={a.id} inst={markInst} onClose={() => setMarkInst(null)} onDone={() => { setMarkInst(null); refresh(); }} />}
     </div>
   );
 }
 
-function SetupAgreementSheet({ caseId, signedDoc, onClose, onDone }: { caseId: number; signedDoc: CaseDocument | undefined; onClose: () => void; onDone: () => void }) {
+function SetupAgreementSheet({ caseId, signedDoc, existing, onClose, onDone }: {
+  caseId: number;
+  signedDoc: CaseDocument | undefined;
+  /** When present the sheet EDITS this agreement (every field, incl. the
+   *  schedule) instead of creating a new one. Rows keep their installment ids
+   *  so paid/manual state survives; removed rows are deleted. */
+  existing?: { agreement: { agreementDate: string | null; courtRef: string | null; notes: string | null }; installments: Installment[] };
+  onClose: () => void;
+  onDone: () => void;
+}) {
   // Plans are typically ~6 months of payments — start with 6 empty rows.
-  const [rows, setRows] = useState<{ dueDate: string; amount: string }[]>(Array.from({ length: 6 }, () => ({ dueDate: "", amount: "" })));
-  const [agreementDate, setAgreementDate] = useState(todayISO());
-  const [courtRef, setCourtRef] = useState("");
-  const [notes, setNotes] = useState("");
+  const [rows, setRows] = useState<{ id?: number; dueDate: string; amount: string }[]>(
+    existing
+      ? existing.installments.map((i) => ({ id: i.id, dueDate: i.dueDate, amount: String(i.amount) }))
+      : Array.from({ length: 6 }, () => ({ dueDate: "", amount: "" })),
+  );
+  const [agreementDate, setAgreementDate] = useState(existing?.agreement.agreementDate ?? todayISO());
+  const [courtRef, setCourtRef] = useState(existing?.agreement.courtRef ?? "");
+  const [notes, setNotes] = useState(existing?.agreement.notes ?? "");
   const [uploaded, setUploaded] = useState<string | null>(signedDoc ? signedDoc.documentName : null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -793,16 +822,22 @@ function SetupAgreementSheet({ caseId, signedDoc, onClose, onDone }: { caseId: n
   });
 
   const valid = rows
-    .map((r) => ({ dueDate: r.dueDate, amount: Number(r.amount) }))
+    .map((r) => ({ id: r.id, dueDate: r.dueDate, amount: Number(r.amount) }))
     .filter((r) => r.dueDate && Number.isFinite(r.amount) && r.amount > 0);
   const total = valid.reduce((s, r) => s + r.amount, 0);
 
   const save = useMutation({
-    mutationFn: () => createPaymentAgreement(caseId, {
-      agreementDate, courtRef: courtRef.trim() || undefined, notes: notes.trim() || undefined,
-      installments: valid,
-    }),
-    onSuccess: () => { toast.success("Payment agreement set up — case moved to Payment Plan"); onDone(); },
+    mutationFn: (): Promise<unknown> =>
+      existing
+        ? updatePaymentAgreement(caseId, {
+            agreementDate, courtRef: courtRef.trim() || null, notes: notes.trim() || null,
+            installments: valid,
+          })
+        : createPaymentAgreement(caseId, {
+            agreementDate, courtRef: courtRef.trim() || undefined, notes: notes.trim() || undefined,
+            installments: valid.map(({ dueDate, amount }) => ({ dueDate, amount })),
+          }),
+    onSuccess: () => { toast.success(existing ? "Agreement updated" : "Payment agreement set up — case moved to Payment Plan"); onDone(); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -810,7 +845,7 @@ function SetupAgreementSheet({ caseId, signedDoc, onClose, onDone }: { caseId: n
   const I = "w-full border border-border rounded-lg px-3 py-2 text-sm bg-background mt-0.5 font-normal";
 
   return (
-    <Sheet title="Set Up Payment Agreement" onClose={onClose}>
+    <Sheet title={existing ? "Edit Payment Agreement" : "Set Up Payment Agreement"} onClose={onClose}>
       {/* 1. Signed magistrate agreement */}
       <div>
         <p className="text-xs font-semibold">Signed magistrate agreement</p>

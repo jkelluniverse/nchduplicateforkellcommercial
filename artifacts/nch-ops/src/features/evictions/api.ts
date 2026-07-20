@@ -80,6 +80,9 @@ export function fetchPaymentAgreement(caseId: number): Promise<{ agreement: Paym
 export function createPaymentAgreement(caseId: number, body: { agreementDate: string; courtRef?: string; notes?: string; installments: { dueDate: string; amount: number }[] }): Promise<{ id: number }> {
   return api(`/evictions/${caseId}/payment-agreement`, { method: "POST", body: JSON.stringify(body) });
 }
+export function updatePaymentAgreement(caseId: number, body: { agreementDate?: string; courtRef?: string | null; notes?: string | null; installments: { id?: number; dueDate: string; amount: number }[] }): Promise<{ ok: true }> {
+  return api(`/evictions/${caseId}/payment-agreement`, { method: "PUT", body: JSON.stringify(body) });
+}
 export function markInstallmentPaid(aid: number, iid: number, body: { paidDate?: string; amount?: number; notes?: string }): Promise<{ ok: true }> {
   return api(`/payment-agreements/${aid}/installments/${iid}/mark-paid`, { method: "POST", body: JSON.stringify(body) });
 }

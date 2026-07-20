@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Phone, Mail, RefreshCw, FileText, Clock, TriangleAlert as AlertTriangle } from "lucide-react";
+import { Search, Phone, Mail, RefreshCw, FileText, Clock, TriangleAlert as AlertTriangle, Pencil, X } from "lucide-react";
 import { formatPhone } from "@/lib/utils";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -62,6 +62,7 @@ export default function Directory() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
   const [editingNotes, setEditingNotes] = useState<string>("");
 
   const { data, isLoading } = useQuery<DirectoryResponse>({
@@ -147,8 +148,14 @@ export default function Directory() {
           >
             &larr; Back to directory
           </button>
-          <h1 className="text-xl font-bold leading-tight">{selected.address}</h1>
+          <div className="flex items-start justify-between gap-2">
+            <h1 className="text-xl font-bold leading-tight">{selected.address}</h1>
+            <button type="button" onClick={() => setEditOpen(true)} aria-label="Edit entry"
+              className="shrink-0 p-1.5 rounded-full bg-white/15"><Pencil className="w-4 h-4" /></button>
+          </div>
         </div>
+
+        {editOpen && <EditEntrySheet entry={selected} onClose={() => setEditOpen(false)} />}
 
         <div className="px-4 pt-4 space-y-4">
           {/* Resident 1 */}
@@ -317,6 +324,72 @@ export default function Directory() {
             </Card>
           ))
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Full edit of a directory entry — every contact field is editable. */
+function EditEntrySheet({ entry, onClose }: { entry: Property; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [form, setForm] = useState({
+    address: entry.address,
+    resident1Name: entry.resident1Name ?? "",
+    resident1Phone: entry.resident1Phone ?? "",
+    resident1Email: entry.resident1Email ?? "",
+    resident2Name: entry.resident2Name ?? "",
+    resident2Phone: entry.resident2Phone ?? "",
+    resident2Email: entry.resident2Email ?? "",
+  });
+  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const r = await fetch(`${API_BASE}/api/directory/${entry.id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify(form),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Failed to save");
+      return r.json();
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["directory"] });
+      toast({ title: "Entry updated" });
+      onClose();
+    },
+    onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const I = "w-full border border-border rounded-lg px-3 py-2 text-sm bg-background mt-0.5";
+  const L = "text-xs font-semibold block";
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="w-full sm:max-w-lg max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-primary text-primary-foreground px-4 py-3 flex items-center justify-between">
+          <h2 className="font-bold text-base">Edit Directory Entry</h2>
+          <button type="button" onClick={onClose} aria-label="Close"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-4 space-y-3">
+          <label className={L}>Property address<input value={form.address} onChange={(e) => set("address", e.target.value)} className={I} /></label>
+          <p className="text-xs uppercase tracking-wider font-semibold text-muted-foreground pt-1">Resident 1</p>
+          <label className={L}>Name<input value={form.resident1Name} onChange={(e) => set("resident1Name", e.target.value)} className={I} /></label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className={L}>Phone<input type="tel" value={form.resident1Phone} onChange={(e) => set("resident1Phone", e.target.value)} className={I} /></label>
+            <label className={L}>Email<input type="email" value={form.resident1Email} onChange={(e) => set("resident1Email", e.target.value)} className={I} /></label>
+          </div>
+          <p className="text-xs uppercase tracking-wider font-semibold text-muted-foreground pt-1">Resident 2 (optional)</p>
+          <label className={L}>Name<input value={form.resident2Name} onChange={(e) => set("resident2Name", e.target.value)} className={I} /></label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className={L}>Phone<input type="tel" value={form.resident2Phone} onChange={(e) => set("resident2Phone", e.target.value)} className={I} /></label>
+            <label className={L}>Email<input type="email" value={form.resident2Email} onChange={(e) => set("resident2Email", e.target.value)} className={I} /></label>
+          </div>
+          <button type="button" onClick={() => save.mutate()} disabled={save.isPending || !form.address.trim()}
+            className="w-full rounded-xl py-3 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: "#B23A2E" }}>
+            {save.isPending ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
       </div>
     </div>
   );
