@@ -18,6 +18,8 @@ import {
   evictionTimelineTable,
   paymentAgreementsTable,
   paymentInstallmentsTable,
+  tenantPaymentNotesTable,
+  tenantNoteCommentsTable,
   tasksTable,
   type PaymentAgreement,
   type PaymentInstallment,
@@ -156,6 +158,15 @@ async function checkAgreement(a: PaymentAgreement, installments: PaymentInstallm
     }
   }
 
+  // Surface the CURRENT month's installment(s) as payment situations on the
+  // property — auto-created once per installment, auto-resolved when paid.
+  // Future months' installments wait for their own month.
+  try {
+    await syncMonthSituations(a, c?.doorloopLeaseId ?? null, ordered);
+  } catch (err) {
+    logger.warn({ err, agreementId: a.id }, "payment-agreement-check: situation sync failed");
+  }
+
   // Everything paid → the plan is complete.
   if (ordered.length > 0 && ordered.every((i) => i.status === "paid")) {
     await db.update(paymentAgreementsTable)
@@ -167,6 +178,61 @@ async function checkAgreement(a: PaymentAgreement, installments: PaymentInstallm
       body: `${a.tenantName} — ${a.propertyAddress}: all ${ordered.length} installments paid.`,
       url: APP_URL,
     }).catch(() => {});
+  }
+}
+
+/**
+ * Auto-write the current month's payment-plan installment as a Payment
+ * Situation on the property (e.g. "installment 3 of 6: $825.00 due 07/30").
+ * One situation per installment, keyed by payment_installment_id, created only
+ * during the installment's own month — so exactly the applicable installment
+ * pops up each month. When the installment is satisfied the situation
+ * auto-resolves with a system comment. A situation the operator already
+ * resolved/deleted is never re-created.
+ */
+async function syncMonthSituations(
+  a: PaymentAgreement,
+  leaseId: string | null,
+  ordered: PaymentInstallment[],
+): Promise<void> {
+  const monthPrefix = todayISO().slice(0, 7);
+  const n = ordered.length;
+  for (let idx = 0; idx < ordered.length; idx++) {
+    const inst = ordered[idx]!;
+    if (!inst.dueDate.startsWith(monthPrefix)) continue;
+    const [existing] = await db
+      .select()
+      .from(tenantPaymentNotesTable)
+      .where(eq(tenantPaymentNotesTable.paymentInstallmentId, inst.id))
+      .limit(1);
+    if (inst.status === "paid") {
+      if (existing && existing.status !== "resolved") {
+        await db.update(tenantPaymentNotesTable)
+          .set({ status: "resolved", resolvedAt: new Date(), updatedAt: new Date() })
+          .where(eq(tenantPaymentNotesTable.id, existing.id));
+        await db.insert(tenantNoteCommentsTable).values({
+          noteId: existing.id,
+          author: "system",
+          kind: "system",
+          comment: `Payment plan installment received (${money(num(inst.amount))}) — auto-resolved.`,
+        });
+      }
+    } else if (!existing) {
+      await db.insert(tenantPaymentNotesTable).values({
+        propertyAddress: a.propertyAddress,
+        tenantName: a.tenantName,
+        doorloopLeaseId: leaseId,
+        situation: `Court payment plan — installment ${idx + 1} of ${n}: ${money(num(inst.amount))} due ${fmtDate(inst.dueDate)}.`,
+        expectedPaymentDate: inst.dueDate,
+        expectedPaymentAmount: String(num(inst.amount)),
+        createdBy: "system",
+        paymentInstallmentId: inst.id,
+      });
+      logger.info(
+        { agreementId: a.id, installmentId: inst.id, address: a.propertyAddress },
+        "payment-agreement-check: month situation created",
+      );
+    }
   }
 }
 

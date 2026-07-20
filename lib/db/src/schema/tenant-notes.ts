@@ -17,6 +17,9 @@ export const tenantPaymentNotesTable = pgTable("tenant_payment_notes", {
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   // Rentec balance Jacob last acknowledged for the payment-activity flag.
   ledgerAckBalance: numeric("ledger_ack_balance", { precision: 10, scale: 2 }),
+  // Set when this situation was auto-created from a court payment-plan
+  // installment (one per installment; the check auto-resolves it when paid).
+  paymentInstallmentId: integer("payment_installment_id"),
 });
 
 export const tenantNoteCommentsTable = pgTable("tenant_note_comments", {

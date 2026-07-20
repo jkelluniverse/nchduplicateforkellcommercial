@@ -47,6 +47,9 @@ async function createTenantNoteTables() {
       `ALTER TABLE tenant_payment_notes ADD COLUMN IF NOT EXISTS ledger_ack_balance NUMERIC(10,2)`,
     );
     await client.query(
+      `ALTER TABLE tenant_payment_notes ADD COLUMN IF NOT EXISTS payment_installment_id INTEGER`,
+    );
+    await client.query(
       `ALTER TABLE tenant_note_comments ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'user'`,
     );
     // Monthly communication checklist log (Awaiting Communication). The
