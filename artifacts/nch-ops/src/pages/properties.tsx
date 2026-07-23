@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
-import { Search, ChevronRight, RefreshCw, ArrowUpDown, X, FileWarning } from "lucide-react";
+import { Search, ChevronRight, RefreshCw, ArrowUpDown, X, FileWarning, Printer } from "lucide-react";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authHeaders() {
@@ -155,15 +155,15 @@ function PastDueNoticeForm({
   const label = "block text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
-      <div className="w-full sm:max-w-lg max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl bg-card shadow-xl">
-        <div className="sticky top-0 bg-[#B23A2E] text-white px-4 py-3 flex items-center justify-between">
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/50">
+      <div className="w-full sm:max-w-lg max-h-[85vh] rounded-t-2xl sm:rounded-2xl bg-card shadow-xl flex flex-col">
+        <div className="bg-[#B23A2E] text-white px-4 py-3 flex items-center justify-between rounded-t-2xl sm:rounded-t-2xl shrink-0">
           <h2 className="font-bold text-base">Past Due Notice</h2>
           <button type="button" onClick={onClose} className="text-white/80 hover:text-white">
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="p-4 space-y-3">
+        <div className="p-4 space-y-3 overflow-y-auto flex-1 min-h-0">
           <div>
             <label className={label}>Recipient</label>
             <Input value={form.recipient_name} onChange={(e) => set("recipient_name", e.target.value)} className={field} />
@@ -211,19 +211,21 @@ function PastDueNoticeForm({
             <span className="text-lg font-extrabold tabular-nums">{fmtMoney(total)}</span>
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <div className="flex gap-2 pt-1">
-            <button type="button" onClick={onClose} className="flex-1 rounded-lg border px-4 py-2 text-sm font-semibold hover:bg-muted">
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={generate}
-              disabled={busy || !form.recipient_name.trim() || !form.property_address.trim()}
-              className="flex-1 rounded-lg bg-[#B23A2E] px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#9c3227] disabled:opacity-50"
-            >
-              {busy ? "Generating…" : "Generate PDF"}
-            </button>
-          </div>
+        </div>
+        {/* Always-visible action bar (the scroll area above can be cut off by
+            the phone's bottom nav — the buttons must never be). */}
+        <div className="shrink-0 border-t bg-card p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px)+4rem)] sm:pb-3 flex gap-2 rounded-b-2xl">
+          <button type="button" onClick={onClose} className="flex-1 rounded-lg border px-4 py-2 text-sm font-semibold hover:bg-muted">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={generate}
+            disabled={busy || !form.recipient_name.trim() || !form.property_address.trim()}
+            className="flex-1 rounded-lg bg-[#B23A2E] px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#9c3227] disabled:opacity-50"
+          >
+            {busy ? "Generating…" : "Generate PDF"}
+          </button>
         </div>
       </div>
     </div>
@@ -244,6 +246,27 @@ function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: ()
   const owes = balance < 0;
 
   const [noticeOpen, setNoticeOpen] = useState(false);
+  const [printBusy, setPrintBusy] = useState(false);
+  const [printError, setPrintError] = useState<string | null>(null);
+
+  const printStatement = async () => {
+    setPrintBusy(true);
+    setPrintError(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/documents/statement`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ propertyId: property.id }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `Request failed (${r.status})`);
+      const { filename, pdfBase64 } = (await r.json()) as { filename: string; pdfBase64: string };
+      downloadPdf(filename, pdfBase64);
+    } catch (e: any) {
+      setPrintError(e.message || "Failed to generate the statement");
+    } finally {
+      setPrintBusy(false);
+    }
+  };
 
   return (
     <div className="pb-24">
@@ -279,14 +302,26 @@ function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: ()
           <p className="text-sm text-muted-foreground mt-0.5">
             {balance === 0 ? "Paid in full" : owes ? "Balance owed" : "Credit on account"}
           </p>
-          <button
-            type="button"
-            onClick={() => setNoticeOpen(true)}
-            className="mt-3 w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-[#B23A2E] px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#9c3227] active:opacity-90"
-          >
-            <FileWarning className="w-4 h-4" />
-            Past Due Notice
-          </button>
+          <div className="mt-3 flex flex-col sm:flex-row gap-2">
+            <button
+              type="button"
+              onClick={() => setNoticeOpen(true)}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-[#B23A2E] px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#9c3227] active:opacity-90"
+            >
+              <FileWarning className="w-4 h-4" />
+              Past Due Notice
+            </button>
+            <button
+              type="button"
+              disabled={printBusy}
+              onClick={printStatement}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg border border-[#B23A2E] px-4 py-2 text-sm font-bold text-[#B23A2E] bg-[#B23A2E]/5 hover:bg-[#B23A2E]/10 active:opacity-90 disabled:opacity-50"
+            >
+              <Printer className="w-4 h-4" />
+              {printBusy ? "Generating…" : "Print Statement"}
+            </button>
+          </div>
+          {printError && <p className="text-sm text-destructive mt-2">{printError}</p>}
         </div>
 
         {/* Statement */}
