@@ -20,6 +20,8 @@
  * property's current resident, then read that renter's ledger.
  */
 import * as rentec from "./rentec";
+import { db, propertiesTable } from "@workspace/db";
+import { ilike } from "drizzle-orm";
 import { logger } from "../lib/logger";
 
 export interface LedgerPayment {
@@ -196,19 +198,58 @@ export async function getTenantContact(opts: {
   address?: string | null;
   leaseId?: string | null;
 }): Promise<TenantContact> {
+  let contact: TenantContact = { renterId: null, name: null, phone: null };
   const renterId = await resolveRenterId(opts.address ?? null, opts.leaseId ?? null);
-  if (!renterId) return { renterId: null, name: null, phone: null };
-  try {
-    const tenants = await rentec.getTenants();
-    const t = tenants.find((x) => x.id === renterId);
-    if (!t) return { renterId, name: null, phone: null };
-    const name = t.fullName ?? ([t.firstName, t.lastName].filter(Boolean).join(" ") || null);
-    const phone = t.e164PhoneMobileNumber ?? t.phones?.[0]?.number ?? null;
-    return { renterId, name, phone: phone && phone.trim() !== "" ? phone : null };
-  } catch (err) {
-    logger.warn({ err, renterId }, "situation-ledger: getTenantContact failed");
-    return { renterId, name: null, phone: null };
+  if (renterId) {
+    try {
+      const tenants = await rentec.getTenants();
+      const t = tenants.find((x) => x.id === renterId);
+      if (t) {
+        const name = t.fullName ?? ([t.firstName, t.lastName].filter(Boolean).join(" ") || null);
+        const phone = t.e164PhoneMobileNumber ?? t.phones?.[0]?.number ?? null;
+        contact = { renterId, name, phone: phone && phone.trim() !== "" ? phone : null };
+      } else {
+        contact = { renterId, name: null, phone: null };
+      }
+    } catch (err) {
+      logger.warn({ err, renterId }, "situation-ledger: getTenantContact failed");
+      contact = { renterId, name: null, phone: null };
+    }
   }
+  // Rentec had no phone (not connected, no match, or blank number): fall back
+  // to the app Directory, which carries the curated per-property contacts.
+  if (!contact.phone && opts.address) {
+    try {
+      const dir = await directoryContactByAddress(opts.address);
+      if (dir) {
+        contact = {
+          renterId: contact.renterId,
+          name: contact.name ?? dir.name,
+          phone: dir.phone,
+        };
+      }
+    } catch (err) {
+      logger.warn({ err, address: opts.address }, "situation-ledger: directory fallback failed");
+    }
+  }
+  return contact;
+}
+
+/** Directory (properties table) lookup by street — phone/name fallback. */
+async function directoryContactByAddress(
+  address: string,
+): Promise<{ name: string | null; phone: string | null } | null> {
+  const street = (address.split(",")[0] ?? "").trim();
+  if (!street) return null;
+  const rows = await db
+    .select()
+    .from(propertiesTable)
+    .where(ilike(propertiesTable.address, `${street}%`))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  const phone = row.resident1Phone ?? row.resident2Phone ?? null;
+  return { name: row.resident1Name ?? null, phone: phone && phone.trim() !== "" ? phone : null };
 }
 
 /** Payments/returns dated on/after `sinceDate` (yyyy-mm-dd inclusive). */

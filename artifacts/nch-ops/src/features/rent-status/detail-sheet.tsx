@@ -5,7 +5,7 @@ import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { SheetButtonRow } from "@/components/sheet-button-row";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Phone, Mail, FileText, DollarSign } from "lucide-react";
+import { Phone, Mail, FileText, DollarSign, Scale } from "lucide-react";
 import { formatPhone } from "@/lib/utils";
 import { fetchPropertyHistory, fmtMoney2, rentKeys } from "./api";
 import type { RentRow, RentStatusValue } from "./types";
@@ -25,6 +25,8 @@ const STATUS_LABEL: Record<RentStatusValue, string> = {
   late: "Late",
   delinquent: "Delinquent",
   partial: "Partial",
+  upcoming: "Expected",
+  returned_payment: "Returned",
 };
 
 const STATUS_COLOR: Record<RentStatusValue, string> = {
@@ -33,6 +35,8 @@ const STATUS_COLOR: Record<RentStatusValue, string> = {
   late: "text-amber-700 bg-amber-50",
   delinquent: "text-[#B23A2E] bg-red-100",
   partial: "text-amber-700 bg-amber-50",
+  upcoming: "text-blue-700 bg-blue-50",
+  returned_payment: "text-amber-800 bg-amber-100",
 };
 
 export function DetailSheet({ propertyId, currentMonth, currentYear, onClose }: Props) {
@@ -92,6 +96,20 @@ export function DetailSheet({ propertyId, currentMonth, currentYear, onClose }: 
     if (data?.contact.phone) {
       window.location.href = `tel:${data.contact.phone.replace(/[^\d+]/g, "")}`;
     }
+  };
+
+  const handleBeginEviction = () => {
+    if (!data) return;
+    sessionStorage.setItem("nch_eviction_prefill", JSON.stringify({
+      propertyAddress: data.property.address,
+      tenantName: data.property.tenantName ?? data.contact.residentName ?? "",
+      doorloopLeaseId: currentMonthRow?.doorloopLeaseId ?? "",
+      doorloopPropertyId: currentMonthRow?.propertyDoorloopId ?? "",
+      balanceAtFiling: currentMonthRow?.pastDueAmount ?? "",
+      monthlyRent: data.property.monthlyPayment ?? currentMonthRow?.monthlyRent ?? "",
+    }));
+    onClose();
+    setLocation("/evictions");
   };
 
   return (
@@ -272,6 +290,11 @@ export function DetailSheet({ propertyId, currentMonth, currentYear, onClose }: 
                 <span className="text-xs">Call Tenant</span>
               </Button>
             </div>
+            {isJacob && (
+              <Button variant="outline" size="sm" className="w-full mt-2 text-[#B23A2E] border-[#B23A2E]/40" onClick={handleBeginEviction}>
+                <Scale className="w-4 h-4 mr-1.5" /> Begin Eviction Process
+              </Button>
+            )}
             </div>
           </>
         )}

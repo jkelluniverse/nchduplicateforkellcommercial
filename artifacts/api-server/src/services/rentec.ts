@@ -31,6 +31,8 @@
  * a real key shows different names, adjust the small mapping helpers — the
  * public shapes returned to the app must stay the same.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { logger } from "../lib/logger";
 
 const BASE_URL =
@@ -47,9 +49,32 @@ interface CacheEntry<T> {
 }
 const cache = new Map<string, CacheEntry<unknown>>();
 
+let fileKey: string | null | undefined; // undefined = not yet probed
+
+/**
+ * The key comes from the RENTEC_API_KEY env var, or from a `RENTEC_API_KEY`
+ * file at the repo/app root (how it's provisioned in this deployment).
+ * Accepts a bare key or `RENTEC_API_KEY=...` line; quotes/whitespace trimmed.
+ */
 function apiKey(): string | null {
   const k = process.env["RENTEC_API_KEY"];
-  return k && k.length > 0 ? k : null;
+  if (k && k.length > 0) return k;
+  if (fileKey === undefined) {
+    fileKey = null;
+    for (const dir of [".", "..", "../..", "../../.."]) {
+      try {
+        const raw = fs.readFileSync(path.join(process.cwd(), dir, "RENTEC_API_KEY"), "utf8");
+        let val = raw.trim();
+        const eq = val.indexOf("=");
+        if (eq !== -1 && /RENTEC_API_KEY\s*$/i.test(val.slice(0, eq))) val = val.slice(eq + 1).trim();
+        val = val.replace(/^["']|["']$/g, "").trim();
+        if (val) { fileKey = val; break; }
+      } catch {
+        /* keep probing */
+      }
+    }
+  }
+  return fileKey;
 }
 
 /** Back-compat alias used across the app to gate live calls. */
@@ -462,9 +487,11 @@ function mapLease(l: RawObj): DLLease {
     // Rentec's lease balance IS the authoritative amount owed.
     outstandingBalance: balance,
     currentBalance: balance,
-    // If Rentec exposes a dedicated past-due figure use it; otherwise the whole
-    // balance is treated as owed and the aggregator ages it from the cycle.
-    overdueBalance: pastDue > 0 ? pastDue : balance,
+    // Past-due dollars are always reported POSITIVE. Prefer a dedicated Rentec
+    // past-due figure; otherwise derive it from the signed balance, where a
+    // NEGATIVE balance is the amount owed (a positive balance is a credit, never
+    // overdue).
+    overdueBalance: pastDue > 0 ? pastDue : balance < 0 ? -balance : 0,
     lastLateFeesProcessedDate: str(pick(l, "last_late_fee", "lastLateFeesProcessedDate")),
   };
 }
@@ -817,8 +844,21 @@ export interface DLRentRow {
   lateFeeDue: number;
   lateFeePaid: number;
   paymentDate: string | null;
-  status: "paid" | "unpaid" | "late" | "delinquent" | "partial";
+  status: "paid" | "unpaid" | "late" | "delinquent" | "partial" | "upcoming";
   daysOverdue: number;
+  /**
+   * For an "upcoming" row, the ISO date (yyyy-mm-dd) this month's rent is due —
+   * the tenant owes it but the due day hasn't arrived, so it's an EXPECTED
+   * incoming payment, not a past-due balance. Null for every other status.
+   */
+  expectedDate: string | null;
+  /**
+   * The tenant's ACTUAL past-due balance in dollars (the real Rentec amount
+   * owed, excluding any not-yet-due current-month charge). This is what the
+   * dashboard's Unpaid/Delinquent totals sum, so they tie out to the Ledger's
+   * real balances rather than a rent-minus-paid estimate. 0 when nothing is due.
+   */
+  pastDueAmount: number;
 }
 
 export interface DLRentStatus {
@@ -836,6 +876,41 @@ const GRACE_DAYS = 10; // grace period after the 1st; late fees start the day af
 const LATE_FEE_DAY = 11; // late fees post on the 11th of the month
 const LATE_FEE_AMOUNT = 75; // flat late fee once past the grace period
 const DELINQUENT_DAYS = 30; // 30+ days past due → delinquent
+// A past-due balance under this much is treated as "paid" for flagging purposes
+// (and excluded from the dashboard Unpaid/Delinquent markers + contact list).
+// These are almost always small fees carried over after the rent itself was
+// paid, so chasing them as "unpaid rent" is noise.
+const UNPAID_FLOOR = 100;
+
+/**
+ * Tenants whose rent is due on a day other than the 1st (from the TenantCloud
+ * roster, column H). Keyed by ADDRESS, not tenant name — the address is the
+ * stable identifier (a name can be ambiguous or shared across leases). Matching
+ * is tolerant of the street-type token (Ave/St) and anchored on the house
+ * number + street name (+ direction), so it works whether Rentec stores
+ * "1034 Prospect SW" or "1034 Prospect Ave SW". Everyone not listed = the 1st
+ * (e.g. 1200 14th St NE / Thomas Kellicker II has no override and stays on the 1st).
+ */
+const DUE_DAY_OVERRIDES: Array<{ num: string; name: string; dir?: string; day: number }> = [
+  { num: "1034", name: "prospect", dir: "sw", day: 23 }, // Rolando Barrios
+  { num: "1615", name: "38th", dir: "nw", day: 28 }, // Charles Anderson (pays ~28th)
+  { num: "3008", name: "willowrow", dir: "ne", day: 20 }, // Fanny Sauceda
+  { num: "1618", name: "19th", dir: "ne", day: 15 }, // Tom Reed (this lease only)
+];
+
+/** The rent due day (1–31) for a property address; defaults to the 1st. */
+function dueDayForAddress(address: string): number {
+  const tokens = streetKey(address).split(" ").filter(Boolean);
+  if (tokens.length === 0) return 1;
+  const num = tokens[0];
+  for (const o of DUE_DAY_OVERRIDES) {
+    if (num !== o.num) continue;
+    if (!tokens.includes(o.name)) continue;
+    if (o.dir && !tokens.includes(o.dir)) continue;
+    return o.day;
+  }
+  return 1;
+}
 
 function round2(x: number): number {
   return Math.round(x * 100) / 100;
@@ -849,6 +924,88 @@ function round2(x: number): number {
  * Rentec computes balances for us, so amount-owed/past-due come straight from
  * Lease.balance — we never sum transactions to derive what's owed.
  */
+// ─── Actual payments received this month (per property) ─────────────
+//
+// "Paid up" must mean a REAL full rent payment landed during the current
+// month — not merely "no balance owed". A tenant with a later due day (e.g.
+// the 23rd) has no posted charge early in the month, so their $0 balance
+// reads as paid when in truth nothing has been received yet. We therefore
+// sweep each property's transaction ledger in the background and record how
+// much money actually came in this month (and the largest charge posted, to
+// recognize a posted-and-settled month). Rentec's /transactions filters by a
+// single property at ~1 req/sec, so the sweep is sequential and cached; until
+// the first sweep completes, classification falls back to balance logic.
+interface MonthPayInfo {
+  payments: number; // Σ credits (money in) on the RENTER's ledger this month
+  monthCharges: number; // Σ debits (rent invoices/fees) posted this month
+}
+let monthPay: { key: string; map: Map<string, MonthPayInfo>; fetchedAt: number } | null = null;
+let monthPayRefreshing = false;
+const MONTH_PAY_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * The sweep reads each property's CURRENT RENTER ledger (the same source the
+ * statement screen uses) — the property-filtered /transactions feed carries
+ * payments only, no charges, so it can't tell a settled month from an unbilled
+ * one. Renter ledgers include both. A renter with multiple properties (e.g.
+ * one tenant renting two addresses, paying both with one combined payment) is
+ * fetched ONCE and their aggregate applies to every property they rent — so a
+ * combined payment covers all of their charges.
+ */
+function ensureMonthPayments(
+  month: number,
+  year: number,
+  propertyIds: string[],
+): Map<string, MonthPayInfo> | null {
+  const key = `${year}-${month}`;
+  const fresh =
+    monthPay && monthPay.key === key && Date.now() - monthPay.fetchedAt < MONTH_PAY_TTL_MS;
+  if (!fresh && !monthPayRefreshing && propertyIds.length > 0) {
+    monthPayRefreshing = true;
+    void (async () => {
+      try {
+        const prefix = `${year}-${String(month).padStart(2, "0")}`;
+        // Group properties by their current renter so a multi-property tenant
+        // is fetched once and their combined payment credits every property.
+        const propsByRenter = new Map<string, string[]>();
+        for (const id of propertyIds) {
+          try {
+            const renterId = await getCurrentRenterIdForProperty(id);
+            if (!renterId) continue;
+            const arr = propsByRenter.get(renterId) ?? [];
+            arr.push(id);
+            propsByRenter.set(renterId, arr);
+          } catch {
+            /* property without a resolvable renter — skipped (balance logic applies) */
+          }
+        }
+        const map = new Map<string, MonthPayInfo>();
+        for (const [renterId, props] of propsByRenter) {
+          try {
+            const { lines } = await getTenantLedger(renterId);
+            let payments = 0;
+            let monthCharges = 0;
+            for (const l of lines) {
+              if (l.hidden || !l.date.startsWith(prefix)) continue;
+              if (l.credit) payments += l.credit;
+              if (l.debit) monthCharges += l.debit;
+            }
+            const info: MonthPayInfo = { payments: round2(payments), monthCharges: round2(monthCharges) };
+            for (const id of props) map.set(id, info);
+          } catch (err) {
+            logger.warn({ err, renterId }, "month-payments: renter sweep failed");
+          }
+        }
+        monthPay = { key, map, fetchedAt: Date.now() };
+        logger.info({ month, year, properties: map.size }, "month-payments sweep complete");
+      } finally {
+        monthPayRefreshing = false;
+      }
+    })();
+  }
+  return monthPay && monthPay.key === key ? monthPay.map : null;
+}
+
 export async function getRentStatus(
   month: number,
   year: number,
@@ -876,17 +1033,15 @@ export async function getRentStatus(
 
   const now = new Date();
   const isCurrentMonth = now.getMonth() + 1 === month && now.getFullYear() === year;
-  const billingStart = new Date(year, month - 1, 1);
   // For the current month, age from today; for a past month, age from its 1st.
   const asOf = isCurrentMonth ? Date.now() : new Date(year, month, 1).getTime();
-  const dayOfMonth = isCurrentMonth ? now.getDate() : 31;
-  const daysSinceFirst = Math.max(
-    0,
-    Math.floor((asOf - billingStart.getTime()) / (24 * 60 * 60 * 1000)),
-  );
-  // Late fees only apply once we are on/after the 11th of the billing month.
-  const pastGrace = dayOfMonth > GRACE_DAYS;
   void LATE_FEE_DAY;
+
+  // Real money received this month, per property (background sweep; null until
+  // the first sweep lands, in which case classification is balance-only).
+  const monthPayMap = isCurrentMonth
+    ? ensureMonthPayments(month, year, properties.map((p) => p.id))
+    : null;
 
   const rows: DLRentRow[] = [];
   const uniqueProps = new Set<string>();
@@ -927,8 +1082,64 @@ export async function getRentStatus(
       monthlyRent = prop.monthlyRent;
     }
 
-    const outstanding = lease.outstandingBalance ?? 0; // Rentec lease balance
-    const owesNothing = outstanding <= 0;
+    // Rentec's lease balance is SIGNED: negative = the tenant owes, positive =
+    // paid ahead / credit on account. This is the same convention the statement
+    // ledger uses (running balance = Σ(credit − debit)) and the same one the
+    // Ledger list/ properties screen render ("$X credit" when positive). The
+    // amount actually OWED is therefore the magnitude of a *negative* balance; a
+    // credit is never money owed, so a prepaid tenant (e.g. someone paying
+    // $1,000 against $850 rent) must read as "paid", not delinquent.
+    const rentecBalance = lease.outstandingBalance ?? 0;
+    const outstanding = rentecBalance < 0 ? -rentecBalance : 0; // dollars owed
+
+    // Rent due day for THIS property. Most tenants are due on the 1st; a few
+    // have a CUSTOM due day later in the month. RentTech posts the monthly rent
+    // charge ~1 day before the due date, so a custom-due-day tenant can have a
+    // $0 balance early in the month (charge not posted yet) yet still be expected
+    // to pay on their scheduled date. We therefore drive "expected" off the known
+    // schedule, not off whether the charge has posted.
+    const dueDay = dueDayForAddress(address);
+    const hasCustomDueDay = dueDay !== 1;
+    const dueDate = new Date(year, month - 1, dueDay);
+    // Expected window = the run-up to a CUSTOM due day (1st through the due day,
+    // inclusive) in the current month. Standard 1st-of-month tenants have no such
+    // window. Within it, THIS month's rent is "expected", not past-due.
+    const inExpectedWindow =
+      isCurrentMonth && hasCustomDueDay && now.getDate() <= dueDay;
+    // Past-due dollars exclude this month's charge while in the expected window
+    // (only a PRIOR-month balance is actionable then).
+    //
+    // Month-end prebill: RentTech posts NEXT month's rent charge ~1 day before
+    // its due date, so at month end the live balance can already include next
+    // month's rent. That charge isn't due yet, so it must not count as THIS
+    // month's past-due — otherwise a tenant who fully paid this month looks
+    // unpaid (and the collected/remaining totals get distorted). Exclude one
+    // month once the next cycle's charge has posted and there's a full month of
+    // balance to attribute to it.
+    const nextDueDate = new Date(year, month, dueDay); // dueDay of the NEXT month
+    const nextChargePosted =
+      isCurrentMonth && Date.now() >= nextDueDate.getTime() - 24 * 60 * 60 * 1000;
+    const prebilledNext =
+      nextChargePosted && outstanding >= monthlyRent - 0.5 ? monthlyRent : 0;
+    const excludeNotYetDue = (inExpectedWindow ? monthlyRent : 0) + prebilledNext;
+    const pastDueOwed = Math.max(0, outstanding - excludeNotYetDue);
+    const owesPastDue = pastDueOwed > 0.005;
+    // A positive Rentec balance is a credit — but only a credit that covers the
+    // FULL month's rent means "paid ahead". A small credit (e.g. $30 left over)
+    // must not make an unbilled month read as paid.
+    const creditCoversMonth = monthlyRent > 0 && rentecBalance >= monthlyRent - 0.5;
+    // Expected = a custom-due-day tenant in their window who is neither paid
+    // ahead nor carrying a prior-month past-due balance. Shown on their scheduled
+    // date REGARDLESS of whether the charge has posted yet.
+    const isUpcoming = inExpectedWindow && !creditCoversMonth && !owesPastDue;
+
+    // Grace runs GRACE_DAYS past the due day; late fees begin only after that.
+    const pastGrace = isCurrentMonth ? now.getDate() > dueDay + GRACE_DAYS : true;
+    // Days since this month's rent became due (0 before the due day).
+    const daysSinceDue = Math.max(
+      0,
+      Math.floor((asOf - dueDate.getTime()) / (24 * 60 * 60 * 1000)),
+    );
 
     const startMatch = lease.start?.match(/^(\d{4})-(\d{2})/);
     const startedThisMonthOrLater = startMatch
@@ -939,29 +1150,72 @@ export async function getRentStatus(
         })()
       : false;
 
-    // How many billing cycles is the balance behind? Used to age the debt so a
-    // single missed month is "unpaid" but anything 30+ days old is delinquent.
+    // How many billing cycles is the PAST-DUE balance behind? Used to age the
+    // debt so a single missed month is "unpaid" but anything 30+ days old is
+    // delinquent. A not-yet-due current month is already excluded via pastDueOwed.
     const monthsBehind =
-      monthlyRent > 0 ? Math.max(1, Math.round(outstanding / monthlyRent)) : 1;
-    const oldestUnpaid = new Date(year, month - 1 - (monthsBehind - 1), 1);
-    const ageDays = owesNothing
-      ? 0
-      : Math.max(
-          daysSinceFirst,
+      monthlyRent > 0 ? Math.max(1, Math.round(pastDueOwed / monthlyRent)) : 1;
+    const oldestUnpaid = new Date(year, month - 1 - (monthsBehind - 1), dueDay);
+    const ageDays = owesPastDue
+      ? Math.max(
+          daysSinceDue,
           Math.floor((asOf - oldestUnpaid.getTime()) / (24 * 60 * 60 * 1000)),
-        );
+        )
+      : 0;
+
+    // Payment-verified truth for the current month: "paid" requires a full rent
+    // payment received THIS month, or a posted charge that's been settled
+    // (covers tenants riding a prepaid credit). Without sweep data (payInfo
+    // undefined) classification stays balance-only — no behavior change.
+    //
+    // "Full" is measured against what was actually BILLED this month when a
+    // charge has posted (the lease's real rent can differ from the property's
+    // monthly_rent field, and a multi-property tenant's combined payment must
+    // cover the sum of their invoices). With nothing billed yet, fall back to
+    // the property's monthly rent.
+    const payInfo = isCurrentMonth && monthlyRent > 0 ? monthPayMap?.get(lease.property) : undefined;
+    const chargePosted = payInfo !== undefined && payInfo.monthCharges > 0.005;
+    const fullDue = chargePosted ? payInfo!.monthCharges : monthlyRent;
+    const paidInFull = payInfo !== undefined && payInfo.payments >= fullDue - 0.5;
 
     let status: DLRentRow["status"];
     let daysOverdue = 0;
+    let expectedDate: string | null = null;
 
-    if (owesNothing) {
-      // Rentec says nothing is owed for this lease (paid, prepaid, or credit).
+    if (isUpcoming && !paidInFull) {
+      // Custom-due-day tenant in the run-up to their date → expected, not late.
+      status = "upcoming";
+      daysOverdue = 0;
+      expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
+    } else if (isUpcoming) {
+      // Paid ahead of their scheduled day — a real payment landed this month.
       status = "paid";
       daysOverdue = 0;
+    } else if (!owesPastDue || pastDueOwed < UNPAID_FLOOR) {
+      // Balance says nothing owed. Verify money actually moved this month:
+      // with sweep data, a $0 balance with NO payment received, NO posted
+      // charge and NO credit is a not-yet-billed month (e.g. a custom due day
+      // we don't know about) — the rent is still expected, not "paid".
+      if (payInfo !== undefined && !paidInFull && !chargePosted && !creditCoversMonth) {
+        if (isCurrentMonth && now.getDate() <= dueDay) {
+          status = "upcoming";
+          expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
+        } else {
+          // Past the due day with no payment this month → unpaid (by schedule),
+          // aged from the due day. No late fee is invented for these (below).
+          status = "unpaid";
+          daysOverdue = daysSinceDue;
+        }
+      } else {
+        // Nothing past due — or only a sub-$100 carried fee (rent itself was
+        // paid). Treated as paid so it never shows up as unpaid/delinquent.
+        status = "paid";
+        daysOverdue = 0;
+      }
     } else if (startedThisMonthOrLater) {
       // Brand-new lease that owes its first month — unpaid, not yet aged.
       status = "unpaid";
-      daysOverdue = daysSinceFirst;
+      daysOverdue = daysSinceDue;
     } else if (ageDays >= DELINQUENT_DAYS) {
       status = "delinquent";
       daysOverdue = ageDays;
@@ -972,16 +1226,28 @@ export async function getRentStatus(
     }
 
     // What's been paid toward THIS month's rent (so the bar tracks the current
-    // cycle and "resets" each month): full rent when current, otherwise rent
-    // minus the portion of the balance attributable to this month.
-    const thisMonthOwed = Math.min(outstanding, monthlyRent);
-    const amountPaid =
-      monthlyRent > 0 ? Math.max(0, monthlyRent - thisMonthOwed) : 0;
+    // cycle and "resets" each month). Based on the PAST-DUE owed (which excludes
+    // next month's prebilled charge and a custom due-day's not-yet-due charge),
+    // so a tenant who paid this month reads as collected even when the live
+    // balance carries next month's posted charge. An expected (not-yet-due)
+    // tenant still reads $0 collected.
+    const thisMonthOwed = isUpcoming
+      ? monthlyRent
+      : Math.min(pastDueOwed, monthlyRent);
+    let amountPaid =
+      isUpcoming || monthlyRent <= 0 ? 0 : Math.max(0, monthlyRent - thisMonthOwed);
+    // With sweep data, "collected" tracks real money received this month: a
+    // paid row counts the full rent (payment or settled credit), anything else
+    // counts the actual dollars that landed (e.g. a partial payment) — so the
+    // collection totals stop crediting not-yet-billed months as collected.
+    if (payInfo !== undefined) {
+      amountPaid = status === "paid" ? monthlyRent : Math.min(monthlyRent, payInfo.payments);
+    }
 
-    // Late fee accrues only once past the 10-day grace period (the 11th onward)
-    // and only while the current month's rent is still owed.
+    // Late fee accrues only once past the grace period (due day + grace) and
+    // only while the current month's rent is actually past due (never upcoming).
     const lateFeeDue =
-      pastGrace && status !== "paid" && thisMonthOwed > 0 ? LATE_FEE_AMOUNT : 0;
+      pastGrace && owesPastDue && thisMonthOwed > 0 ? LATE_FEE_AMOUNT : 0;
 
     rows.push({
       leaseId: lease.id,
@@ -995,6 +1261,9 @@ export async function getRentStatus(
       paymentDate: null,
       status,
       daysOverdue,
+      expectedDate,
+      // Real past-due dollars (excludes any not-yet-due current-month charge).
+      pastDueAmount: round2(pastDueOwed),
     });
   }
 

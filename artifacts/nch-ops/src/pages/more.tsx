@@ -2,13 +2,13 @@ import { Link } from "wouter";
 import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent } from "@/components/ui/card";
-import { Settings, Building2, Contact, CircleCheck as CheckCircle, LogOut, Plug, Loader as Loader2 } from "lucide-react";
+import { Settings, Building2, Contact, CircleCheck as CheckCircle, LogOut, Plug, Loader as Loader2, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 export default function More() {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [diag, setDiag] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
 
@@ -32,6 +32,9 @@ export default function More() {
     { href: "/properties", icon: <Building2 className="w-6 h-6" />, title: "Properties", desc: "Properties, units & payment status" },
     { href: "/tasks", icon: <CheckCircle className="w-6 h-6" />, title: "Tasks", desc: "Your personal task list" },
     { href: "/directory", icon: <Contact className="w-6 h-6" />, title: "Directory", desc: "Tenant & contact directory" },
+    ...(user?.role === "jacob"
+      ? [{ href: "/evictions", icon: <Scale className="w-6 h-6" />, title: "Evictions", desc: "Track eviction cases, court dates, documents & write-offs" }]
+      : []),
     { href: "/settings", icon: <Settings className="w-6 h-6" />, title: "Settings", desc: "App preferences and account" },
   ];
 

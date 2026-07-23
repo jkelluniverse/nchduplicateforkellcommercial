@@ -15,6 +15,11 @@ export const tenantPaymentNotesTable = pgTable("tenant_payment_notes", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  // Rentec balance Jacob last acknowledged for the payment-activity flag.
+  ledgerAckBalance: numeric("ledger_ack_balance", { precision: 10, scale: 2 }),
+  // Set when this situation was auto-created from a court payment-plan
+  // installment (one per installment; the check auto-resolves it when paid).
+  paymentInstallmentId: integer("payment_installment_id"),
 });
 
 export const tenantNoteCommentsTable = pgTable("tenant_note_comments", {
@@ -22,6 +27,8 @@ export const tenantNoteCommentsTable = pgTable("tenant_note_comments", {
   noteId: integer("note_id").notNull().references(() => tenantPaymentNotesTable.id, { onDelete: "cascade" }),
   author: text("author").notNull(),
   comment: text("comment").notNull(),
+  // 'user' (typed), 'system' (edit/auto-update audit entry) or 'reminder'.
+  kind: text("kind").default("user"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

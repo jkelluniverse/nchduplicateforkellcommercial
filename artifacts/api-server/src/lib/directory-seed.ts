@@ -11,7 +11,7 @@
  * The Rentec sync is set up to never delete these `seed:` rows.
  */
 import { db, propertiesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 
 export interface SeedContact {
@@ -29,7 +29,7 @@ export interface SeedContact {
 }
 
 export const DIRECTORY_CONTACTS: SeedContact[] = [
-  { street: "1620 Wooster Ave NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Javier Cruz Coraliza", r1Phone: "234-706-4492", r2Name: "Erika Olivio", r2Phone: "716-753-6160", r2Email: "Erikasierraolivo04@gmail.com" },
+  { street: "1620 Wooster Ave NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Sierra Olivio", r1Phone: "716-753-6160", r1Email: "Erikasierraolivo04@gmail.com" },
   { street: "1034 Prospect Ave SW", city: "Canton", state: "OH", zip: "44706", r1Name: "Rolando Barrios", r1Phone: "234-360-7063", r1Email: "barriosrolando796@gmail.com", notes: "Pays on the 23rd" },
   { street: "1609 Oxford Ave NW", city: "Canton", state: "OH", zip: "44703", r1Name: "Joan Mejia Perez", r1Phone: "330-934-9325", r1Email: "mp5174665@gmail.com" },
   { street: "1026 Arlington Ave SW", city: "Canton", state: "OH", zip: "44706", r1Name: "Tello Salas Carmen Lizbeth", r1Phone: "352-949-9333", r1Email: "carmentello95@gmail.com" },
@@ -46,14 +46,15 @@ export const DIRECTORY_CONTACTS: SeedContact[] = [
   { street: "1820 Vine Ave SW", city: "Canton", state: "OH", zip: "44706", r1Name: "Kevin Leech", r1Phone: "330-495-9087", r1Email: "kev.leech9966@gmail.com" },
   { street: "1618 19th St NE", city: "Canton", state: "OH", zip: "44714", r1Name: "Tom Reed", r1Phone: "330-209-1824", r1Email: "tomreed859@gmail.com", notes: "Pays on the 15th" },
   { street: "1202 15th St NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Robert" },
+  { street: "1314 Plain Ave NE", city: "Canton", state: "OH", zip: "44714", r1Name: "Terry Williams", r1Phone: "330-445-0949", r1Email: "steeldog1110@yahoo.com" },
   { street: "2617 Avalon Ave NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Mary Miku", r1Phone: "234-458-4101", r2Name: "Patrick Miku", r2Phone: "234-207-7384", r2Email: "patrickmiku28@gmail.com" },
   { street: "1200 14th St NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Thomas Kellicker", r1Phone: "330-952-7410", r1Email: "tomk_32@icloud.com" },
   { street: "1461 John Ct SE", city: "Canton", state: "OH", zip: "44707", r1Name: "Fred Wilkinson" },
   { street: "219 14th St NW", city: "Canton", state: "OH", zip: "44703", r1Name: "Frosty Ann Saunier", r1Phone: "330-324-8278", r1Email: "frosty.saunier75@gmail.com" },
-  { street: "1535 Vine Ave SW", city: "Canton", state: "OH", zip: "44706", r1Name: "Anthony Sindledecker", r1Phone: "330-371-8461", r1Email: "anthonysindledecker1@gmail.com", r2Name: "Alyssa Marie Wainwright", r2Email: "alyssa.wainwright2015@gmail.com" },
-  { street: "1304 Cole Ave SE", city: "Canton", state: "OH", zip: "44707", r1Name: "Dan Radtka", r1Phone: "234-425-2056", r1Email: "radtkadan453@gmail.com", notes: "Unit recently vacated" },
-  { street: "1314 Plain Ave NE", city: "Canton", state: "OH", zip: "44714", r1Name: "Terry Williams", r1Phone: "330-445-0949", r1Email: "steeldog1110@yahoo.com" },
+  { street: "1535 Vine Ave SW", city: "Canton", state: "OH", zip: "44706", r1Name: "Anthony Sindledecker", r1Phone: "330-371-8461", r1Email: "anthonysindledecker1@gmail.com" },
   { street: "1815 3rd St SE", city: "Canton", state: "OH", zip: "44704", r1Name: "Joy Resendiz", r1Phone: "234-322-3345", r1Email: "hooverjoy961@gmail.com" },
+  { street: "2010 31st St NE", city: "Canton", state: "OH", zip: "44705", r1Name: "Makendy Francois" },
+  { street: "2202 31st St NE Unit B", city: "Canton", state: "OH", zip: "44705", r1Name: "Arnie Glantz", r1Phone: "330-284-2338", notes: "$1,750/mo · Unit B at the office building" },
 ];
 
 export function normStreet(addr: string | null | undefined): string {
@@ -122,4 +123,46 @@ export async function seedDirectoryFromContacts(): Promise<SeedResult> {
 
   logger.info({ inserted, updated, total: DIRECTORY_CONTACTS.length }, "Directory contacts seed complete");
   return { inserted, updated };
+}
+
+/**
+ * One-time portfolio corrections applied at every boot (idempotent).
+ *
+ * July 2026 changes per the master tracker:
+ *  - 1535 Vine Ave SW is Anthony Sindledecker ONLY (former co-tenant removed
+ *    from the directory row and from every stored tenant-name snapshot).
+ *  - 1620 Wooster Ave NE tenant is now Sierra Olivio.
+ *  - 2010 31st St NE (Makendy Francois) added via the seed above.
+ *  - 1304 Cole Ave SE SOLD — row removed.
+ *
+ * The seed above only fills blanks, so existing rows need these explicit
+ * updates. Name snapshots live in tenant_payment_notes, rent_status,
+ * contact_log and reminder_log.
+ */
+export async function applyPortfolioFixes(): Promise<void> {
+  const fixes: Array<{ pattern: string; name: string }> = [
+    { pattern: "1535 Vine Ave SW%", name: "Anthony Sindledecker" },
+    { pattern: "1620 Wooster Ave%", name: "Sierra Olivio" },
+  ];
+  // Directory rows.
+  await db.execute(sql`
+    UPDATE properties SET resident2_name = NULL, resident2_phone = NULL, resident2_email = NULL,
+      resident1_name = 'Anthony Sindledecker'
+    WHERE address ILIKE '1535 Vine Ave SW%'`);
+  await db.execute(sql`
+    UPDATE properties SET resident1_name = 'Sierra Olivio', resident1_phone = '716-753-6160',
+      resident1_email = 'Erikasierraolivo04@gmail.com', resident2_name = NULL,
+      resident2_phone = NULL, resident2_email = NULL
+    WHERE address ILIKE '1620 Wooster Ave%' AND resident1_name IS DISTINCT FROM 'Sierra Olivio'`);
+  await db.execute(sql`DELETE FROM properties WHERE address ILIKE '1304 Cole Ave SE%'`);
+  // Stored tenant-name snapshots.
+  for (const f of fixes) {
+    for (const table of ["tenant_payment_notes", "rent_status", "contact_log", "reminder_log"]) {
+      const col = table === "rent_status" ? "address" : "property_address";
+      await db.execute(sql`
+        UPDATE ${sql.raw(table)} SET tenant_name = ${f.name}
+        WHERE ${sql.raw(col)} ILIKE ${f.pattern} AND tenant_name IS DISTINCT FROM ${f.name}`);
+    }
+  }
+  logger.info("Portfolio fixes applied (1535 Vine, 1620 Wooster, 1304 Cole sold, 2010 31st)");
 }

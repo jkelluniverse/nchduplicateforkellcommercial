@@ -1,16 +1,31 @@
 import { useState, useMemo } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Scale } from "lucide-react";
+import { listEvictions, evictionsKey } from "@/features/evictions/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { RefreshCw, History, ChevronRight, CircleAlert as AlertCircle } from "lucide-react";
+import { RefreshCw, History, CircleAlert as AlertCircle } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { fetchRentSummary, fetchRentDetail, fmtMoney, rentKeys } from "./api";
 import type { RentRow, RentSummary } from "./types";
 import { DetailSheet } from "./detail-sheet";
 import { HistoryModal } from "./history-modal";
 import { PaymentSituationsSection } from "./payment-notes";
+import { AwaitingCommunicationSection } from "@/features/contact-checklist/section";
+import { ResolveMenu, ResolvedThisMonthSection } from "./resolve";
 
 const NEEDS_ATTENTION_LIMIT = 6;
+
+/** "2026-06-20" → "20th" (ordinal day-of-month for the expected-payment note). */
+function ordinalDay(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = Number(iso.slice(8, 10));
+  if (!d) return "";
+  const v = d % 100;
+  const suffix = v >= 11 && v <= 13 ? "th" : ["th", "st", "nd", "rd"][d % 10] ?? "th";
+  return `${d}${suffix}`;
+}
 
 export function RentStatusWidget() {
   const qc = useQueryClient();
@@ -32,9 +47,23 @@ export function RentStatusWidget() {
 
   const summary = summaryQ.data;
   const rows = detailQ.data ?? [];
+  const [, navigate] = useLocation();
+
+  // Active eviction cases, keyed by normalized address → show ⚖️ on the row.
+  const evictionsQ = useQuery({ queryKey: evictionsKey, queryFn: listEvictions, refetchInterval: 5 * 60 * 1000 });
+  const evictionByAddr = useMemo(() => {
+    const m = new Map<string, { id: number; statusLabel: string; courtDate: string | null; courtTime: string | null }>();
+    for (const c of evictionsQ.data?.active ?? []) m.set(c.propertyAddress.trim().toLowerCase(), c);
+    return m;
+  }, [evictionsQ.data]);
 
   const needsAttention = useMemo<RentRow[]>(
-    () => rows.filter((r) => r.status === "delinquent" && r.daysOverdue >= 30),
+    () => rows.filter((r) => r.status === "delinquent" && r.daysOverdue >= 30 && !r.override),
+    [rows],
+  );
+  const resolvedRows = useMemo<RentRow[]>(() => rows.filter((r) => r.override), [rows]);
+  const returnedRows = useMemo<RentRow[]>(
+    () => rows.filter((r) => r.status === "returned_payment" && !r.override),
     [rows],
   );
   const visibleAttention = showAll
@@ -125,6 +154,7 @@ export function RentStatusWidget() {
               count={paidCount}
               line1={`${fmtMoney(paidCollected)} collected`}
               line2={lateFeesCollected > 0 ? `${fmtMoney(lateFeesCollected)} fees paid` : undefined}
+              onClick={() => navigate("/properties?filter=paid")}
             />
             <StatCard
               borderColor="border-l-red-500"
@@ -134,6 +164,7 @@ export function RentStatusWidget() {
               count={summary.unpaid.count}
               line1={`${fmtMoney(summary.unpaid.total_outstanding)} outstanding`}
               line2={summary.unpaid.late_fees_outstanding > 0 ? `${fmtMoney(summary.unpaid.late_fees_outstanding)} fees due` : undefined}
+              onClick={() => navigate("/properties?filter=unpaid")}
             />
             <StatCard
               borderColor="border-l-[#B23A2E]"
@@ -143,8 +174,49 @@ export function RentStatusWidget() {
               count={summary.delinquent.count}
               line1={`${fmtMoney(summary.delinquent.total_outstanding)} outstanding`}
               line2={summary.delinquent.avg_days_overdue > 0 ? `Avg ${summary.delinquent.avg_days_overdue} days over` : undefined}
+              onClick={() => navigate("/properties?filter=delinquent")}
             />
           </div>
+
+          {/* Returned-payment indicator (subtle, amber) */}
+          {(summary.returned_payments?.count ?? returnedRows.length) > 0 && (
+            <p className="text-[11px] font-medium text-amber-700 -mt-1 px-0.5">
+              🔄 {summary.returned_payments?.count ?? returnedRows.length} returned payment
+              {(summary.returned_payments?.count ?? returnedRows.length) === 1 ? "" : "s"}
+              {summary.returned_payments?.total_balance
+                ? ` · ${fmtMoney(summary.returned_payments.total_balance)} balance restored`
+                : ""}
+            </p>
+          )}
+
+          {/* Resolved-this-month note (subtle) */}
+          {(summary.resolved_count ?? resolvedRows.length) > 0 && (
+            <p className="text-[11px] text-muted-foreground -mt-1 px-0.5">
+              {summary.resolved_count ?? resolvedRows.length} resolved this month
+            </p>
+          )}
+
+          {/* Expected incoming — owes this month but the (custom) due day hasn't
+              arrived yet; not late, not collected. Lists who and when. */}
+          {(summary.expected?.count ?? 0) > 0 && (
+            <p className="text-[11px] font-medium text-blue-700 -mt-1 px-0.5">
+              🗓 {summary.expected!.count} expected later this month
+              {summary.expected!.total_expected > 0
+                ? ` · ${fmtMoney(summary.expected!.total_expected)}`
+                : ""}
+              {summary.expected!.properties.length > 0 && (
+                <span className="font-normal text-blue-600/90">
+                  {" — "}
+                  {summary.expected!.properties
+                    .map(
+                      (p) =>
+                        `${p.tenant_name ?? p.address} (due ${ordinalDay(p.expected_date)})`,
+                    )
+                    .join(", ")}
+                </span>
+              )}
+            </p>
+          )}
 
           {/* Collection rate */}
           <CollectionRate summary={summary} />
@@ -169,38 +241,86 @@ export function RentStatusWidget() {
             <p className="text-[11px] text-muted-foreground px-0.5 mb-2">
               30+ days past due — notice eligible
             </p>
+
+            {/* Returned payments — paid then reversed; amber, always shown */}
+            {returnedRows.length > 0 && (
+              <div className="space-y-1 mb-2">
+                {returnedRows.map((r) => (
+                  <ReturnedPaymentRow
+                    key={r.id}
+                    row={r}
+                    onOpen={() => setSelectedPropertyId(r.propertyId)}
+                    onChanged={handleRefresh}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Active eviction cases — always shown, even if not yet 30+ delinquent */}
+            {(evictionsQ.data?.active ?? [])
+              .filter((c) => !needsAttention.some((r) => r.address.trim().toLowerCase() === c.propertyAddress.trim().toLowerCase()))
+              .map((c) => (
+                <button key={`ev-${c.id}`} type="button" onClick={() => navigate(`/evictions/${c.id}`)}
+                  className="w-full flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-muted/60 text-left">
+                  <Scale className="w-4 h-4 shrink-0 text-[#B23A2E]" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{c.propertyAddress}</p>
+                    <p className="text-xs text-muted-foreground truncate">{c.tenantName}</p>
+                    <p className="text-[10px] font-bold text-[#B23A2E] truncate">
+                      ⚖️ {c.statusLabel}{c.courtDate ? ` · Court ${c.courtDate}${c.courtTime ? ` ${c.courtTime}` : ""}` : ""}
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#B23A2E] shrink-0">View Case</span>
+                </button>
+              ))}
+
             {needsAttention.length === 0 ? (
-              <p className="text-sm text-green-600 px-0.5 py-2">
-                No properties currently 30+ days past due
-              </p>
+              returnedRows.length === 0 && (evictionsQ.data?.active ?? []).length === 0 ? (
+                <p className="text-sm text-green-600 px-0.5 py-2">
+                  No properties currently 30+ days past due
+                </p>
+              ) : null
             ) : (
               <>
                 <div className="space-y-1">
-                  {visibleAttention.map((r) => (
-                    <button
+                  {visibleAttention.map((r) => {
+                    const ev = evictionByAddr.get(r.address.trim().toLowerCase());
+                    return (
+                    <div
                       key={r.id}
-                      type="button"
-                      onClick={() => setSelectedPropertyId(r.propertyId)}
-                      className="w-full flex items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-muted/60 active:bg-muted transition-colors"
+                      className="w-full flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-muted/60 transition-colors"
                     >
-                      <span className="w-2 h-2 rounded-full shrink-0 bg-[#B23A2E]" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{r.address}</p>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {r.tenantName ?? "Unknown tenant"}
-                        </p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-sm font-semibold">
-                          {fmtMoney(r.monthlyRent + r.lateFeeDue)}
-                        </p>
-                        <p className="text-[10px] font-bold text-[#B23A2E]">
-                          {r.daysOverdue}d over
-                        </p>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
-                    </button>
-                  ))}
+                      <button
+                        type="button"
+                        onClick={() => (ev ? navigate(`/evictions/${ev.id}`) : setSelectedPropertyId(r.propertyId))}
+                        className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                      >
+                        {ev
+                          ? <Scale className="w-4 h-4 shrink-0 text-[#B23A2E]" />
+                          : <span className="w-2 h-2 rounded-full shrink-0 bg-[#B23A2E]" />}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{r.address}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {r.tenantName ?? "Unknown tenant"}
+                          </p>
+                          {ev && (
+                            <p className="text-[10px] font-bold text-[#B23A2E] truncate">
+                              {ev.statusLabel}{ev.courtDate ? ` · Court ${ev.courtDate}${ev.courtTime ? ` ${ev.courtTime}` : ""}` : ""}
+                            </p>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-sm font-semibold">
+                            {fmtMoney(r.monthlyRent + r.lateFeeDue)}
+                          </p>
+                          <p className="text-[10px] font-bold text-[#B23A2E]">
+                            {ev ? "View Case" : `${r.daysOverdue}d over`}
+                          </p>
+                        </div>
+                      </button>
+                      {!ev && <ResolveMenu row={r} onChanged={handleRefresh} />}
+                    </div>
+                  );})}
                 </div>
                 {hiddenCount > 0 && (
                   <button
@@ -214,8 +334,14 @@ export function RentStatusWidget() {
               </>
             )}
           </div>
+          {/* Awaiting Communication (Jacob only, after the 6th) */}
+          <AwaitingCommunicationSection />
+
           {/* Payment Situations */}
           <PaymentSituationsSection />
+
+          {/* Resolved This Month (manual overrides) */}
+          <ResolvedThisMonthSection rows={resolvedRows} onChanged={handleRefresh} />
         </CardContent>
       </Card>
 
@@ -236,6 +362,49 @@ export function RentStatusWidget() {
   );
 }
 
+function fmtShortDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (m) return `${m[2]}/${m[3]}`;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" });
+}
+
+function ReturnedPaymentRow({
+  row,
+  onOpen,
+  onChanged,
+}: {
+  row: RentRow;
+  onOpen: () => void;
+  onChanged: () => void;
+}) {
+  const balance = row.returnedBalance ?? row.monthlyRent + row.lateFeeDue;
+  return (
+    <div className="w-full flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-2">
+      <button type="button" onClick={onOpen} className="flex items-start gap-2 flex-1 min-w-0 text-left">
+        <span aria-hidden className="text-sm leading-none mt-0.5">🔄</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium truncate">{row.address}</p>
+          <p className="text-xs text-amber-800 truncate">
+            {row.tenantName ?? "Unknown tenant"}
+          </p>
+          <p className="text-xs font-semibold text-amber-800 mt-0.5">
+            Payment returned {fmtShortDate(row.returnedDate)} · {fmtMoney(balance)} balance
+          </p>
+          {row.returnedOriginalAmount != null && (
+            <p className="text-[11px] text-amber-700">
+              Original payment {fmtMoney(row.returnedOriginalAmount)} received{" "}
+              {fmtShortDate(row.returnedOriginalDate)}
+            </p>
+          )}
+        </div>
+      </button>
+      <ResolveMenu row={row} onChanged={onChanged} />
+    </div>
+  );
+}
+
 function StatCard({
   borderColor,
   icon,
@@ -244,6 +413,7 @@ function StatCard({
   count,
   line1,
   line2,
+  onClick,
 }: {
   borderColor: string;
   icon: string;
@@ -252,9 +422,14 @@ function StatCard({
   count: number;
   line1: string;
   line2?: string;
+  onClick?: () => void;
 }) {
+  const Tag = onClick ? "button" : "div";
   return (
-    <div className={`bg-card rounded-lg border border-border border-l-4 ${borderColor} p-2.5 min-w-0`}>
+    <Tag
+      {...(onClick ? { type: "button" as const, onClick } : {})}
+      className={`bg-card rounded-lg border border-border border-l-4 ${borderColor} p-2.5 min-w-0 text-left ${onClick ? "active:scale-[0.98] transition-transform cursor-pointer" : ""}`}
+    >
       <div className="flex items-center gap-1">
         <span aria-hidden className="text-xs">{icon}</span>
         <p className="text-[9px] font-bold text-muted-foreground tracking-wider">{label}</p>
@@ -265,7 +440,7 @@ function StatCard({
       </p>
       <p className="text-[10px] font-medium text-foreground leading-tight mt-1 truncate">{line1}</p>
       {line2 && <p className="text-[10px] text-muted-foreground leading-tight truncate">{line2}</p>}
-    </div>
+    </Tag>
   );
 }
 

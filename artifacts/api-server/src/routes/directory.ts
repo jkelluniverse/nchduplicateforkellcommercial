@@ -81,4 +81,29 @@ router.patch("/directory/:id/notes", requireAuth, async (req: AuthRequest, res):
   res.json(row);
 });
 
+/** PATCH /api/directory/:id — edit any contact field of a directory entry. */
+router.patch("/directory/:id", requireAuth, async (req: AuthRequest, res): Promise<void> => {
+  const id = parseInt(req.params["id"] as string, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const b = req.body as Record<string, string | null | undefined>;
+  const patch: Record<string, unknown> = {};
+  for (const f of [
+    "address",
+    "resident1Name", "resident1Phone", "resident1Email",
+    "resident2Name", "resident2Phone", "resident2Email",
+    "notes",
+  ] as const) {
+    if (b[f] !== undefined) patch[f] = (typeof b[f] === "string" ? b[f]!.trim() : b[f]) || null;
+  }
+  if (patch["address"] === null) { res.status(400).json({ error: "Address cannot be blank" }); return; }
+  if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
+  const [row] = await db
+    .update(propertiesTable)
+    .set(patch)
+    .where(eq(propertiesTable.id, id))
+    .returning();
+  if (!row) { res.status(404).json({ error: "Not found" }); return; }
+  res.json(row);
+});
+
 export default router;

@@ -2,9 +2,20 @@ import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
 import { db, propertiesTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth";
-import { getPropertyLedger } from "../services/property-ledger";
+import { getPropertyLedger, getLedgerList } from "../services/property-ledger";
 
 const router: IRouter = Router();
+
+/**
+ * GET /api/properties/ledger-list — the Ledger roster: one row per directory
+ * property enriched with live Rentec balance, status, aging, and whether an
+ * open Payment Situation exists. Drives the sortable/filterable Ledger list.
+ * (Declared before "/properties/:propertyId" so it isn't swallowed by it.)
+ */
+router.get("/properties/ledger-list", requireAuth, async (req, res): Promise<void> => {
+  const q = typeof req.query.q === "string" ? req.query.q : undefined;
+  res.json(await getLedgerList(q));
+});
 
 router.get("/properties", requireAuth, async (req, res): Promise<void> => {
   const q = req.query.q as string | undefined;
