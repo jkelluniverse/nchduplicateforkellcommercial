@@ -8,11 +8,14 @@
  *     reminder history.
  *   - Manual contact logging: records a call/text so the property drops off the
  *     Needs Contacted list.
+ *   - PDF report generation: aggregates all properties and their payment status
+ *     into a single-page PDF for owner viewing.
  *
  * All tenant/balance/phone data is read live from Rentec; nothing is hardcoded.
  */
 import { Router, type IRouter } from "express";
 import { and, desc, eq, gte, or } from "drizzle-orm";
+import PDFDocument from "pdfkit";
 import {
   db,
   tenantPaymentNotesTable,
@@ -257,6 +260,222 @@ router.post(
     } catch (err) {
       logger.error({ err }, "POST /collection/contacts failed");
       res.status(500).json({ error: "Failed to log contact" });
+    }
+  },
+);
+
+/**
+ * GET /api/collection/report/pdf
+ * Generate a single-page PDF report showing all properties and their payment status.
+ * Aggregates paid, unpaid, late, delinquent, and partial statuses with a summary table.
+ */
+router.get(
+  "/collection/report/pdf",
+  requireAuth,
+  requireRole("jacob"),
+  async (_req, res): Promise<void> => {
+    try {
+      const now = new Date();
+      const month = now.getMonth() + 1;
+      const year = now.getFullYear();
+
+      const status = await rentec.getRentStatus(month, year);
+      if (!status) {
+        res.status(500).json({ error: "Failed to load rent status from Rentec" });
+        return;
+      }
+
+      // Aggregate statistics by status
+      const stats = {
+        paid: 0,
+        unpaid: 0,
+        late: 0,
+        delinquent: 0,
+        partial: 0,
+        totalDue: 0,
+        totalPaid: 0,
+      };
+
+      for (const row of status.rows) {
+        stats[row.status]++;
+        const owed = Math.max(0, row.monthlyRent - row.amountPaid) + row.lateFeeDue;
+        stats.totalDue += owed;
+        stats.totalPaid += row.amountPaid;
+      }
+
+      // Create PDF document
+      const doc = new PDFDocument({
+        size: "letter",
+        margin: 40,
+      });
+
+      // Set response headers for PDF download
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="rent-report-${year}-${String(month).padStart(2, "0")}.pdf"`,
+      );
+
+      // Pipe PDF to response
+      doc.pipe(res);
+
+      // Title and date
+      doc.fontSize(24).font("Helvetica-Bold").text("Rent Status Report", { align: "center" });
+      doc.fontSize(11).font("Helvetica").text(
+        `Month: ${new Date(year, month - 1).toLocaleDateString("en-US", { month: "long", year: "numeric" })}`,
+        { align: "center" },
+      );
+      doc.fontSize(10).text(`Generated: ${new Date().toLocaleDateString("en-US")}`, { align: "center" });
+      doc.moveDown(0.5);
+
+      // Summary section
+      doc.fontSize(12).font("Helvetica-Bold").text("Summary");
+      doc.fontSize(10).font("Helvetica");
+      const summaryData = [
+        ["Total Properties:", status.uniquePropertyCount.toString()],
+        ["Paid:", stats.paid.toString()],
+        ["Unpaid:", stats.unpaid.toString()],
+        ["Late:", stats.late.toString()],
+        ["Delinquent:", stats.delinquent.toString()],
+        ["Partial:", stats.partial.toString()],
+        ["Total Amount Due:", `$${stats.totalDue.toFixed(2)}`],
+        ["Total Amount Paid:", `$${stats.totalPaid.toFixed(2)}`],
+      ];
+
+      const summaryTable = {
+        width: 200,
+        columns: ["Label", "Value"],
+        rows: summaryData.map((row) => ({
+          Label: { text: row[0], width: 100 },
+          Value: { text: row[1], width: 100 },
+        })),
+      };
+
+      doc.moveDown(0.25);
+      // Manual summary rendering since table plugin not available
+      for (const [label, value] of summaryData) {
+        doc.text(`${label} ${value}`, { indent: 20 });
+      }
+
+      doc.moveDown(0.5);
+
+      // Properties table header
+      doc.fontSize(12).font("Helvetica-Bold").text("Property Details");
+      doc.fontSize(9).font("Helvetica-Bold");
+
+      const pageHeight = doc.page.height;
+      const pageWidth = doc.page.width;
+      const margin = 40;
+      const contentWidth = pageWidth - 2 * margin;
+
+      // Column widths for compact display
+      const colWidths = {
+        address: contentWidth * 0.35,
+        tenant: contentWidth * 0.25,
+        status: contentWidth * 0.15,
+        owed: contentWidth * 0.1,
+        paid: contentWidth * 0.15,
+      };
+
+      // Table header row
+      const headerY = doc.y;
+      doc.text("Address", margin, headerY, { width: colWidths.address, continued: false });
+      doc.text("Tenant", margin + colWidths.address, headerY, {
+        width: colWidths.tenant,
+        continued: false,
+      });
+      doc.text("Status", margin + colWidths.address + colWidths.tenant, headerY, {
+        width: colWidths.status,
+        continued: false,
+      });
+      doc.text("Owed", margin + colWidths.address + colWidths.tenant + colWidths.status, headerY, {
+        width: colWidths.owed,
+        continued: false,
+      });
+      doc.text(
+        "Paid",
+        margin + colWidths.address + colWidths.tenant + colWidths.status + colWidths.owed,
+        headerY,
+        {
+          width: colWidths.paid,
+          continued: false,
+        },
+      );
+
+      // Draw header underline
+      doc.moveTo(margin, doc.y).lineTo(pageWidth - margin, doc.y).stroke();
+      doc.moveDown(0.25);
+
+      // Table data rows
+      doc.fontSize(8).font("Helvetica");
+      for (const row of status.rows) {
+        const owed = Math.max(0, row.monthlyRent - row.amountPaid) + row.lateFeeDue;
+        const currentY = doc.y;
+
+        // Check if we need a new page
+        if (currentY > pageHeight - 80) {
+          doc.addPage();
+          doc.fontSize(8).font("Helvetica");
+        }
+
+        // Truncate address for display
+        const displayAddress =
+          row.address.length > 40 ? row.address.substring(0, 40) + "..." : row.address;
+
+        doc.text(displayAddress, margin, { width: colWidths.address, continued: false });
+        doc.text(row.tenantName || "—", margin + colWidths.address, {
+          width: colWidths.tenant,
+          continued: false,
+        });
+
+        // Status with color coding
+        const statusColor = {
+          paid: "green",
+          unpaid: "red",
+          late: "orange",
+          delinquent: "darkred",
+          partial: "blue",
+        };
+
+        const statusText = row.status.charAt(0).toUpperCase() + row.status.slice(1);
+        doc.text(statusText, margin + colWidths.address + colWidths.tenant, {
+          width: colWidths.status,
+          continued: false,
+        });
+        doc.text(
+          `$${owed.toFixed(2)}`,
+          margin + colWidths.address + colWidths.tenant + colWidths.status,
+          {
+            width: colWidths.owed,
+            continued: false,
+          },
+        );
+        doc.text(
+          `$${row.amountPaid.toFixed(2)}`,
+          margin + colWidths.address + colWidths.tenant + colWidths.status + colWidths.owed,
+          {
+            width: colWidths.paid,
+            continued: false,
+          },
+        );
+
+        doc.moveDown(0.3);
+      }
+
+      // Footer
+      doc.fontSize(8).font("Helvetica").text(
+        "This report was automatically generated from Rentec data.",
+        margin,
+        pageHeight - 30,
+        {
+          align: "center",
+        },
+      );
+
+      doc.end();
+    } catch (err) {
+      logger.error({ err }, "GET /collection/report/pdf failed");
+      res.status(500).json({ error: "Failed to generate PDF report" });
     }
   },
 );
