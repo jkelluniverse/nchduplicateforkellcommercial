@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
-import { Search, ChevronRight, RefreshCw, ArrowUpDown, X, FileWarning, Printer } from "lucide-react";
+import { Search, ChevronRight, RefreshCw, ArrowUpDown, X, FileWarning, Printer, FileText } from "lucide-react";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authHeaders() {
@@ -84,6 +84,22 @@ function downloadPdf(filename: string, base64: string): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+/** Portfolio-wide rent status report (streams a PDF from the API). */
+async function downloadPdfReport(): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/collection/report/pdf`, { headers: authHeaders() });
+  if (!response.ok) throw new Error("Failed to download report");
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const now = new Date();
+  a.download = `rent-report-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => window.URL.revokeObjectURL(url), 5000);
 }
 
 function PastDueNoticeForm({
@@ -384,7 +400,7 @@ function LedgerView({ property, onBack }: { property: LedgerProperty; onBack: ()
   );
 }
 
-// ─── Ledger list: sort + filter ─────────────────────────────────────────────
+// ─── Ledger list: sort + filter ───────────────────────────────────────
 // Main filter = the month's payment-verified status (resets on the 1st):
 // Paid / Unpaid / Delinquent. Balance-type views (has balance, credit,
 // expected) remain as secondary filters.
@@ -436,6 +452,18 @@ export default function Properties() {
   const [sort, setSort] = useState<SortKey>("balance_desc");
   const [delinquency, setDelinquency] = useState<Delinquency>("all");
   const [situation, setSituation] = useState<Tri>("all");
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+
+  const handleGenerateReport = async () => {
+    setIsGeneratingReport(true);
+    try {
+      await downloadPdfReport();
+    } catch {
+      alert("Failed to download the PDF report. Please try again.");
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
 
   const { data: properties = [], isLoading } = useQuery<LedgerProperty[]>({
     queryKey: ["ledger-list"],
@@ -537,7 +565,18 @@ export default function Properties() {
   return (
     <div className="pb-20">
       <div className="bg-primary text-primary-foreground p-4 sticky top-0 z-10 shadow-md space-y-3">
-        <h1 className="text-2xl font-bold">Ledger</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">Ledger</h1>
+          <button
+            type="button"
+            onClick={handleGenerateReport}
+            disabled={isGeneratingReport}
+            className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-primary-foreground/20 hover:bg-primary-foreground/30 disabled:opacity-50 rounded-lg transition-colors"
+          >
+            <FileText className="w-4 h-4" />
+            {isGeneratingReport ? "Generating…" : "Report"}
+          </button>
+        </div>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
           <Input
