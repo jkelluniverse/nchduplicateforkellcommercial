@@ -568,6 +568,17 @@ function streetKey(addr: string): string {
   return (addr.split(",")[0] ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// Properties SOLD out of the portfolio. They still exist in the Rentec account
+// (their transaction history is kept there), so every live view must exclude
+// them explicitly — rent status, the payment sweep, and the directory sync all
+// check this. Matched by normalized street line.
+const RETIRED_STREET_KEYS = new Set([
+  "1304 cole ave se", // sold July 2026
+]);
+export function isRetiredAddress(address: string | null | undefined): boolean {
+  return !!address && RETIRED_STREET_KEYS.has(streetKey(address));
+}
+
 /** Resolve a local address to its Rentec property id by street match. */
 export async function findRentecPropertyIdByAddress(address: string): Promise<string | null> {
   const target = streetKey(address);
@@ -1040,7 +1051,11 @@ export async function getRentStatus(
   // Real money received this month, per property (background sweep; null until
   // the first sweep lands, in which case classification is balance-only).
   const monthPayMap = isCurrentMonth
-    ? ensureMonthPayments(month, year, properties.map((p) => p.id))
+    ? ensureMonthPayments(
+        month,
+        year,
+        properties.filter((p) => !isRetiredAddress(formatPropertyAddress(p))).map((p) => p.id),
+      )
     : null;
 
   const rows: DLRentRow[] = [];
@@ -1052,6 +1067,9 @@ export async function getRentStatus(
 
     const prop = propById.get(lease.property);
     const address = prop ? formatPropertyAddress(prop) : lease.name ?? lease.id;
+    // Sold/retired properties stay in Rentec for their history — never in the
+    // live rent status.
+    if (isRetiredAddress(address)) continue;
 
     let tenantName: string | null = null;
     // Primary link: Rentec leases carry the resident's renter_id directly.

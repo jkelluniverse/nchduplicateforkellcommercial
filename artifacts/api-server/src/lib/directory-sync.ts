@@ -9,6 +9,7 @@ import {
   hasToken,
   clearCache,
   formatPropertyAddress,
+  isRetiredAddress,
   buildLeaseTenantLookup,
   selectCurrentLeaseTenants,
   type DLTenant,
@@ -180,6 +181,21 @@ export async function syncDirectory(): Promise<SyncResult> {
     const syncedPropertyIds: string[] = [];
 
     for (const entry of entries) {
+      // Sold/retired properties are excluded everywhere — never (re-)insert
+      // them into the directory even though Rentec still lists them, and
+      // delete any row a previous sync already created.
+      if (isRetiredAddress(entry.address)) {
+        const [stale] = await db
+          .select()
+          .from(propertiesTable)
+          .where(eq(propertiesTable.doorloopPropertyId, entry.doorloopPropertyId))
+          .limit(1);
+        if (stale) {
+          await db.delete(propertiesTable).where(eq(propertiesTable.id, stale.id));
+          removed++;
+        }
+        continue;
+      }
       syncedPropertyIds.push(entry.doorloopPropertyId);
 
       const [existing] = await db
