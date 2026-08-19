@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
-import { Search, ChevronRight, RefreshCw } from "lucide-react";
+import { Search, ChevronRight, RefreshCw, FileText } from "lucide-react";
 
 const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authHeaders() {
@@ -56,6 +56,26 @@ function fmtDate(iso: string): string {
   const t = Date.parse(iso);
   if (!t) return iso;
   return new Date(t).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
+}
+
+async function downloadPdfReport(): Promise<void> {
+  try {
+    const response = await fetch(`${API_BASE}/api/collection/report/pdf`, { headers: authHeaders() });
+    if (!response.ok) throw new Error("Failed to download report");
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    a.download = `rent-report-${year}-${month}.pdf`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("Failed to download PDF report:", err);
+    alert("Failed to download PDF report. Please try again.");
+  }
 }
 
 function LedgerView({ property, onBack }: { property: Property; onBack: () => void }) {
@@ -163,6 +183,7 @@ function LedgerView({ property, onBack }: { property: Property; onBack: () => vo
 export default function Properties() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Property | null>(null);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
   const { data: properties = [], isLoading } = useQuery<Property[]>({
     queryKey: ["properties", search],
@@ -175,6 +196,15 @@ export default function Properties() {
     },
   });
 
+  const handleGenerateReport = async () => {
+    setIsGeneratingReport(true);
+    try {
+      await downloadPdfReport();
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
+
   if (selected) {
     return <LedgerView property={selected} onBack={() => setSelected(null)} />;
   }
@@ -182,7 +212,18 @@ export default function Properties() {
   return (
     <div className="pb-20">
       <div className="bg-primary text-primary-foreground p-4 sticky top-0 z-10 shadow-md">
-        <h1 className="text-2xl font-bold mb-3">Properties</h1>
+        <div className="flex items-center justify-between mb-3">
+          <h1 className="text-2xl font-bold">Properties</h1>
+          <button
+            type="button"
+            onClick={handleGenerateReport}
+            disabled={isGeneratingReport}
+            className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-primary-foreground/20 hover:bg-primary-foreground/30 disabled:opacity-50 rounded-lg transition-colors"
+          >
+            <FileText className="w-4 h-4" />
+            {isGeneratingReport ? "Generating..." : "Report"}
+          </button>
+        </div>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
           <Input
